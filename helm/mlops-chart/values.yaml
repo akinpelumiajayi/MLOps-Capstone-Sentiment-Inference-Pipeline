@@ -1,0 +1,46 @@
+# ── image ─────────────────────────────────────────────────────────────────────
+image:
+  repository: ghcr.io/your-org/sentiment-api
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+# ── app config ────────────────────────────────────────────────────────────────
+config:
+  confidenceThreshold: "0.65"
+  modelVersion: v1
+  modelPath: models/model.pkl
+
+# ── resource limits ───────────────────────────────────────────────────────────
+resources:
+  requests:
+    cpu: "100m"
+    memory: "256Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+# ── HPA ───────────────────────────────────────────────────────────────────────
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+  targetCPUUtilization: 60
+
+# ── Prometheus monitoring ─────────────────────────────────────────────────────
+monitoring:
+  enabled: true
+  scrapeInterval: 15s
+  prometheusRelease: kube-prom    # must match your Prometheus Helm release name
+
+# ── service ───────────────────────────────────────────────────────────────────
+service:
+  port: 80
+  targetPort: 8000
+
+# ── Streamlit sidecar ─────────────────────────────────────────────────────────
+streamlit:
+  enabled: false                  # set true to run dashboard as a sidecar
+  image: ghcr.io/your-org/sentiment-dashboard:latest
+  port: 8501

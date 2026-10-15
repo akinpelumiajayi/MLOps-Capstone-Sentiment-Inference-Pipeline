@@ -1,0 +1,16 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: sentiment-api
+  namespace: sentiment-prod
+  labels:
+    app: sentiment-api
+    release: kube-prom         # must match your kube-prometheus-stack Helm release name
+spec:
+  selector:
+    matchLabels:
+      app: sentiment-api
+  endpoints:
+    - port:     http
+      path:     /metrics
+      interval: 15s

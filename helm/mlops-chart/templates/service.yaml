@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "mlops-chart.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mlops-chart.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "mlops-chart.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}
+      protocol: TCP
+    {{- if .Values.streamlit.enabled }}
+    - name: streamlit
+      port: {{ .Values.streamlit.port }}
+      targetPort: {{ .Values.streamlit.port }}
+      protocol: TCP
+    {{- end }}

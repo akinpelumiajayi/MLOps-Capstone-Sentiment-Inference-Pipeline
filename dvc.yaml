@@ -1,0 +1,18 @@
+stages:
+  train:
+    cmd: python training/train.py
+    deps:
+      - training/train.py
+      - data/processed/train.csv
+    params:
+      - params.yaml:
+          - train.C
+          - train.ngram_max
+          - train.max_features
+          - train.test_size
+          - train.random_seed
+    outs:
+      - models/model.pkl
+    metrics:
+      - models/metrics.json:
+          cache: false

@@ -1,0 +1,127 @@
+pipeline {
+    agent none
+
+    environment {
+        REGISTRY   = "ghcr.io"
+        IMAGE_NAME = "${REGISTRY}/${env.GIT_URL.replaceAll('https://github.com/', '').replace('.git', '')}/sentiment-api"
+    }
+
+    stages {
+
+        // ── Stage 1: Checkout ─────────────────────────────────────────────────
+        stage("Checkout") {
+            agent any
+            steps {
+                checkout scm
+            }
+        }
+
+        // ── Stage 2: Test ─────────────────────────────────────────────────────
+        stage("Test") {
+            agent {
+                docker {
+                    image "python:3.11-slim"
+                    args  "--user root"
+                }
+            }
+            steps {
+                sh """
+                    pip install --quiet -r requirements.txt pytest httpx
+                    pytest tests/ -v --tb=short --junit-xml=test-results.xml
+                """
+            }
+            post {
+                always {
+                    junit "test-results.xml"
+                }
+            }
+        }
+
+        // ── Stage 3: DVC Train ────────────────────────────────────────────────
+        stage("DVC Train") {
+            agent {
+                docker {
+                    image "python:3.11-slim"
+                    args  "--user root"
+                }
+            }
+            environment {
+                AWS_CREDS = credentials("aws-dvc")
+            }
+            steps {
+                sh "pip install --quiet -r requirements-train.txt"
+                sh """
+                    dvc remote modify myremote access_key_id     ${AWS_CREDS_USR}
+                    dvc remote modify myremote secret_access_key ${AWS_CREDS_PSW}
+                    dvc pull || true
+                    dvc repro
+                    dvc metrics show
+                    dvc push
+                """
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: "models/metrics.json, models/model.pkl",
+                                     fingerprint: true
+                }
+            }
+        }
+
+        // ── Stage 4: Build & Push ─────────────────────────────────────────────
+        stage("Build & Push") {
+            agent any
+            when {
+                branch "main"
+            }
+            environment {
+                GHCR_CREDS = credentials("ghcr-credentials")
+            }
+            steps {
+                sh """
+                    echo ${GHCR_CREDS_PSW} | docker login ${REGISTRY} -u ${GHCR_CREDS_USR} --password-stdin
+                    docker build -t ${IMAGE_NAME}:${GIT_COMMIT} -t ${IMAGE_NAME}:latest .
+                    docker push ${IMAGE_NAME}:${GIT_COMMIT}
+                    docker push ${IMAGE_NAME}:latest
+                """
+            }
+        }
+
+        // ── Stage 5: Deploy to K8s ────────────────────────────────────────────
+        stage("Deploy to K8s") {
+            agent any
+            when {
+                branch "main"
+            }
+            environment {
+                KUBECONFIG = credentials("kubeconfig")
+            }
+            steps {
+                sh """
+                    helm upgrade --install sentiment-api ./helm/mlops-chart \\
+                        --namespace sentiment-prod \\
+                        --create-namespace \\
+                        --set image.repository=${IMAGE_NAME} \\
+                        --set image.tag=${GIT_COMMIT} \\
+                        --set config.modelVersion=${GIT_COMMIT} \\
+                        --atomic \\
+                        --timeout 3m
+
+                    kubectl rollout status deployment/sentiment-api \\
+                        -n sentiment-prod --timeout=2m
+                """
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            echo "✅ Pipeline succeeded — sentiment-api deployed to sentiment-prod"
+        }
+        failure {
+            echo "❌ Pipeline failed — check logs above"
+        }
+    }
+}

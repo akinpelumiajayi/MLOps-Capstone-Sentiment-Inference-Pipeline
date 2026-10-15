@@ -1,0 +1,18 @@
+{{- if .Values.monitoring.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "mlops-chart.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mlops-chart.labels" . | nindent 4 }}
+    release: {{ .Values.monitoring.prometheusRelease }}   # must match Prometheus Helm release
+spec:
+  selector:
+    matchLabels:
+      {{- include "mlops-chart.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port:     http
+      path:     /metrics
+      interval: {{ .Values.monitoring.scrapeInterval }}
+{{- end }}

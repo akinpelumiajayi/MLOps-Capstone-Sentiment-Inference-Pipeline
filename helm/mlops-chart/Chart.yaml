@@ -1,0 +1,6 @@
+apiVersion: v2
+name: mlops-chart
+description: Production Helm chart — sentiment ML inference pipeline
+type: application
+version: 1.0.0
+appVersion: "2.0.0"

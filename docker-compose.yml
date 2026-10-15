@@ -1,0 +1,82 @@
+version: "3.9"
+
+services:
+
+  # ── ML API ──────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mlops-sentiment:local
+    container_name: sentiment-api
+    ports:
+      - "8000:8000"
+    environment:
+      MODEL_PATH: models/model.pkl
+      CONFIDENCE_THRESHOLD: "0.65"
+      MODEL_VERSION: v1
+    volumes:
+      - ./models:/app/models        # mount live model for hot-swap
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - prometheus
+
+  # ── Streamlit dashboard ─────────────────────────────────────────────────────
+  dashboard:
+    build:
+      context: .
+      dockerfile: streamlit_app/Dockerfile.streamlit
+    container_name: sentiment-dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      API_URL: http://api:8000
+    depends_on:
+      - api
+
+  # ── Prometheus ───────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+
+  # ── Grafana ──────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  # ── Training job (run manually: docker compose --profile train up trainer) ──
+  trainer:
+    build:
+      context: .
+      dockerfile: Dockerfile.train
+    container_name: sentiment-trainer
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+    profiles: ["train"]           # only starts with: docker compose --profile train up
+
+volumes:
+  grafana-data:

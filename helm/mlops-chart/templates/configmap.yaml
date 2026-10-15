@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mlops-chart.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mlops-chart.labels" . | nindent 4 }}
+data:
+  CONFIDENCE_THRESHOLD: {{ .Values.config.confidenceThreshold | quote }}
+  MODEL_VERSION:        {{ .Values.config.modelVersion | quote }}
+  MODEL_PATH:           {{ .Values.config.modelPath | quote }}
