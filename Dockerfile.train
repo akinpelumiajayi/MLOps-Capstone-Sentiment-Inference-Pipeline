@@ -1,12 +1,18 @@
-FROM python:3.11-slim
+# syntax=docker/dockerfile:1.7
+# ── Training job image ────────────────────────────────────────────────────────
+ARG PYTHON_IMAGE=python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df
+FROM ${PYTHON_IMAGE}
 
+ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1     PYTHONPATH=/app/src PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1     MLFLOW_DISABLE_AGENT_HINT=1
+
+RUN groupadd --system --gid 10001 app && useradd --system --uid 10001 --gid app --create-home app
 WORKDIR /app
+COPY requirements.txt requirements-train.txt ./
+RUN pip install -r requirements-train.txt
+COPY --chown=app:app params.yaml ./
+COPY --chown=app:app src/ ./src/
 
-COPY requirements-train.txt .
-RUN pip install --no-cache-dir -r requirements-train.txt
-
-COPY training/ ./training/
-COPY params.yaml .
-COPY dvc.yaml .
-
-CMD ["python", "training/train.py"]
+USER 10001
+# DVC needs git metadata, so the container runs the equivalent pure-Python
+# pipeline. --skip-if-exists makes `docker compose up` idempotent.
+CMD ["python", "-m", "sentiment.pipeline", "--skip-if-exists"]

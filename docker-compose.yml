@@ -1,82 +1,117 @@
-version: "3.9"
+# Full local stack:  cp .env.example .env && docker compose up --build
+#   API docs    http://localhost:8000/docs
+#   Dashboard   http://localhost:8501
+#   MLflow      http://localhost:5000
+#   Prometheus  http://localhost:9090
+#   Grafana     http://localhost:3000   (credentials from .env)
+# Load test:    docker compose --profile loadtest up locust   -> http://localhost:8089
+
+name: sentiment-mlops
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt: ["no-new-privileges:true"]
 
 services:
-
-  # ── ML API ──────────────────────────────────────────────────────────────────
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: mlops-sentiment:local
-    container_name: sentiment-api
-    ports:
-      - "8000:8000"
-    environment:
-      MODEL_PATH: models/model.pkl
-      CONFIDENCE_THRESHOLD: "0.65"
-      MODEL_VERSION: v1
-    volumes:
-      - ./models:/app/models        # mount live model for hot-swap
+  # ---- Experiment tracking + model registry ------------------------------------
+  mlflow:
+    <<: *hardening
+    image: ghcr.io/mlflow/mlflow:v3.18.0
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --artifacts-destination /mlflow/artifacts --serve-artifacts
+      --allowed-hosts mlflow:5000,localhost:5000,127.0.0.1:5000
+    ports: ["5000:5000"]
+    volumes: [mlflow-data:/mlflow]
     healthcheck:
-      test: ["CMD", "python", "-c",
-             "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-    depends_on:
-      - prometheus
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
 
-  # ── Streamlit dashboard ─────────────────────────────────────────────────────
-  dashboard:
-    build:
-      context: .
-      dockerfile: streamlit_app/Dockerfile.streamlit
-    container_name: sentiment-dashboard
-    ports:
-      - "8501:8501"
-    environment:
-      API_URL: http://api:8000
-    depends_on:
-      - api
-
-  # ── Prometheus ───────────────────────────────────────────────────────────────
-  prometheus:
-    image: prom/prometheus:v2.51.2
-    container_name: prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--web.enable-lifecycle"
-
-  # ── Grafana ──────────────────────────────────────────────────────────────────
-  grafana:
-    image: grafana/grafana:10.4.2
-    container_name: grafana
-    ports:
-      - "3000:3000"
-    environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin123
-      GF_USERS_ALLOW_SIGN_UP: "false"
-    volumes:
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - grafana-data:/var/lib/grafana
-    depends_on:
-      - prometheus
-
-  # ── Training job (run manually: docker compose --profile train up trainer) ──
+  # ---- One-shot training job: download -> prepare -> train -> evaluate ---------
+  # Skips itself when ./models already holds a model (delete it to retrain).
   trainer:
-    build:
-      context: .
-      dockerfile: Dockerfile.train
-    container_name: sentiment-trainer
+    build: {context: ., dockerfile: Dockerfile.train}
+    image: sentiment-trainer:compose
+    restart: "no"
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
     volumes:
       - ./data:/app/data
       - ./models:/app/models
-    profiles: ["train"]           # only starts with: docker compose --profile train up
+      - ./reports:/app/reports
+    depends_on:
+      mlflow: {condition: service_healthy}
+
+  # ---- Inference API -----------------------------------------------------------
+  api:
+    <<: *hardening
+    build: {context: ., dockerfile: Dockerfile, target: base}
+    image: sentiment-api:compose   # `base` target: model is mounted, not baked in
+    ports: ["8000:8000"]
+    environment:
+      LOG_LEVEL: INFO
+      LOW_CONFIDENCE_THRESHOLD: "0.65"
+    volumes:
+      - ./models:/app/models:ro
+    read_only: true
+    tmpfs: [/tmp]
+    depends_on:
+      trainer: {condition: service_completed_successfully}
+
+  # ---- Streamlit UI ------------------------------------------------------------
+  dashboard:
+    <<: *hardening
+    build: {context: ., dockerfile: streamlit_app/Dockerfile.streamlit}
+    image: sentiment-dashboard:compose
+    ports: ["8501:8501"]
+    environment:
+      API_URL: http://api:8000
+    depends_on:
+      api: {condition: service_healthy}
+
+  # ---- Monitoring --------------------------------------------------------------
+  prometheus:
+    <<: *hardening
+    image: prom/prometheus:v3.16.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    ports: ["9090:9090"]
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./helm/sentiment-api/files/alerts.yml:/etc/prometheus/alerts.yml:ro  # shared with the Helm chart
+      - prometheus-data:/prometheus
+
+  grafana:
+    <<: *hardening
+    image: grafana/grafana:13.2.6
+    ports: ["3000:3000"]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env (see .env.example)}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on: [prometheus]
+
+  # ---- Load generator (opt-in) -------------------------------------------------
+  locust:
+    image: locustio/locust:2.47.0
+    profiles: ["loadtest"]
+    command: -f /mnt/locust/locustfile.py --host http://api:8000
+    ports: ["8089:8089"]
+    volumes: [./loadtest:/mnt/locust:ro]
+    depends_on:
+      api: {condition: service_healthy}
 
 volumes:
+  mlflow-data:
+  prometheus-data:
   grafana-data:
