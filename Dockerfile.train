@@ -7,6 +7,8 @@ ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1     PYTHONPATH=/app/src P
 
 RUN groupadd --system --gid 10001 app && useradd --system --uid 10001 --gid app --create-home app
 WORKDIR /app
+# Pre-create output dirs so named volumes mounted here inherit app ownership.
+RUN mkdir -p data models reports && chown app:app data models reports
 COPY requirements.txt requirements-train.txt ./
 RUN pip install -r requirements-train.txt
 COPY --chown=app:app params.yaml ./

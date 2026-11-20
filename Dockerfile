@@ -11,7 +11,7 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 # ---- base: code and dependencies, no model ------------------------------------
-# Used by docker compose, which mounts ./models produced by the trainer service.
+# Used by docker compose, which mounts the model volume written by the trainer.
 FROM ${PYTHON_IMAGE} AS base
 LABEL org.opencontainers.image.title="sentiment-api" \
       org.opencontainers.image.description="Sentiment inference API (FastAPI + scikit-learn)" \

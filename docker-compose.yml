@@ -31,7 +31,10 @@ services:
       retries: 12
 
   # ---- One-shot training job: download -> prepare -> train -> evaluate ---------
-  # Skips itself when ./models already holds a model (delete it to retrain).
+  # Skips itself when the model volume already holds a model; retrain from
+  # scratch with `docker compose down -v && docker compose up`.
+  # Named volumes (not bind mounts) so the non-root containers can write on
+  # any host OS; ownership comes from the image.
   trainer:
     build: {context: ., dockerfile: Dockerfile.train}
     image: sentiment-trainer:compose
@@ -39,9 +42,9 @@ services:
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
     volumes:
-      - ./data:/app/data
-      - ./models:/app/models
-      - ./reports:/app/reports
+      - data-store:/app/data
+      - model-store:/app/models
+      - report-store:/app/reports
     depends_on:
       mlflow: {condition: service_healthy}
 
@@ -55,7 +58,7 @@ services:
       LOG_LEVEL: INFO
       LOW_CONFIDENCE_THRESHOLD: "0.65"
     volumes:
-      - ./models:/app/models:ro
+      - model-store:/app/models:ro
     read_only: true
     tmpfs: [/tmp]
     depends_on:
@@ -112,6 +115,9 @@ services:
       api: {condition: service_healthy}
 
 volumes:
+  data-store:
+  model-store:
+  report-store:
   mlflow-data:
   prometheus-data:
   grafana-data:
