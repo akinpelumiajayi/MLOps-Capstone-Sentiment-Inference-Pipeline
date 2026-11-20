@@ -1,127 +1,128 @@
+// Declarative pipeline mirroring .github/workflows/ci.yml for teams on Jenkins.
+//
+// Required credentials:
+//   ghcr-credentials  (username/password)  - registry push, main only
+//   kubeconfig        (secret file)        - deploy, main only
+//   aws-dvc           (username/password)  - optional; only if DVC_REMOTE_URL is set
+//
+// Agent requirements: Docker (for the python container and image builds), helm, kubectl.
+
 pipeline {
     agent none
 
+    options {
+        timestamps()
+        timeout(time: 45, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        disableConcurrentBuilds(abortPrevious: true)
+    }
+
+    parameters {
+        string(name: 'DVC_REMOTE_URL', defaultValue: '', description: 'Optional s3:// DVC remote')
+    }
+
     environment {
-        REGISTRY   = "ghcr.io"
-        IMAGE_NAME = "${REGISTRY}/${env.GIT_URL.replaceAll('https://github.com/', '').replace('.git', '')}/sentiment-api"
+        MLFLOW_DISABLE_AGENT_HINT = '1'
+        PIP_DISABLE_PIP_VERSION_CHECK = '1'
     }
 
     stages {
-
-        // ── Stage 1: Checkout ─────────────────────────────────────────────────
-        stage("Checkout") {
-            agent any
+        stage('Quality') {
+            agent { docker { image 'python:3.12-slim-bookworm'; args '--user root' } }
             steps {
-                checkout scm
-            }
-        }
-
-        // ── Stage 2: Test ─────────────────────────────────────────────────────
-        stage("Test") {
-            agent {
-                docker {
-                    image "python:3.11-slim"
-                    args  "--user root"
-                }
-            }
-            steps {
-                sh """
-                    pip install --quiet -r requirements.txt pytest httpx
-                    pytest tests/ -v --tb=short --junit-xml=test-results.xml
-                """
+                sh '''
+                    pip install --quiet -r requirements-dev.txt -e .
+                    ruff check .
+                    ruff format --check .
+                    mypy
+                    pytest --cov --cov-report=xml --junitxml=junit.xml
+                '''
             }
             post {
-                always {
-                    junit "test-results.xml"
-                }
+                always { junit 'junit.xml' }
             }
         }
 
-        // ── Stage 3: DVC Train ────────────────────────────────────────────────
-        stage("DVC Train") {
-            agent {
-                docker {
-                    image "python:3.11-slim"
-                    args  "--user root"
-                }
-            }
-            environment {
-                AWS_CREDS = credentials("aws-dvc")
-            }
+        stage('Train + quality gate') {
+            agent { docker { image 'python:3.12-slim-bookworm'; args '--user root' } }
+            environment { GIT_SHA = "${env.GIT_COMMIT}" }
             steps {
-                sh "pip install --quiet -r requirements-train.txt"
-                sh """
-                    dvc remote modify myremote access_key_id     ${AWS_CREDS_USR}
-                    dvc remote modify myremote secret_access_key ${AWS_CREDS_PSW}
-                    dvc pull || true
+                sh '''
+                    apt-get update -qq && apt-get install -y -qq git >/dev/null
+                    git config --global --add safe.directory "$PWD"
+                    pip install --quiet -r requirements-train.txt -e .
+                    git show HEAD^:reports/metrics.json > baseline_metrics.json 2>/dev/null || rm -f baseline_metrics.json
+                '''
+                script {
+                    if (params.DVC_REMOTE_URL) {
+                        withCredentials([usernamePassword(credentialsId: 'aws-dvc',
+                                usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                            // Single quotes: the shell expands secrets, Groovy never sees them.
+                            sh 'dvc remote add --default --force storage "$DVC_REMOTE_URL" && (dvc pull --allow-missing || true)'
+                        }
+                    }
+                }
+                sh '''
                     dvc repro
                     dvc metrics show
-                    dvc push
-                """
+                    python -m sentiment.gate --baseline baseline_metrics.json
+                '''
+                // The image build runs on another agent: hand the model over explicitly.
+                stash name: 'model', includes: 'models/model.pkl,models/metadata.json,models/reference_profile.json'
             }
             post {
-                success {
-                    archiveArtifacts artifacts: "models/metrics.json, models/model.pkl",
-                                     fingerprint: true
+                always { archiveArtifacts artifacts: 'reports/**', allowEmptyArchive: true }
+            }
+        }
+
+        stage('Build image') {
+            agent any
+            steps {
+                unstash 'model'
+                script {
+                    def repo = env.GIT_URL.replaceFirst(/^https:\/\/github.com\//, '').replaceFirst(/\.git$/, '').toLowerCase()
+                    env.IMAGE = "ghcr.io/${repo}/sentiment-api"
+                }
+                sh 'docker build --target runtime -t "$IMAGE:sha-$GIT_COMMIT" .'
+            }
+        }
+
+        stage('Push') {
+            when { branch 'main' }
+            agent any
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'ghcr-credentials',
+                        usernameVariable: 'REG_USER', passwordVariable: 'REG_TOKEN')]) {
+                    sh '''
+                        echo "$REG_TOKEN" | docker login ghcr.io -u "$REG_USER" --password-stdin
+                        docker push "$IMAGE:sha-$GIT_COMMIT"
+                    '''
                 }
             }
         }
 
-        // ── Stage 4: Build & Push ─────────────────────────────────────────────
-        stage("Build & Push") {
+        stage('Deploy') {
+            when { branch 'main' }
             agent any
-            when {
-                branch "main"
-            }
-            environment {
-                GHCR_CREDS = credentials("ghcr-credentials")
-            }
             steps {
-                sh """
-                    echo ${GHCR_CREDS_PSW} | docker login ${REGISTRY} -u ${GHCR_CREDS_USR} --password-stdin
-                    docker build -t ${IMAGE_NAME}:${GIT_COMMIT} -t ${IMAGE_NAME}:latest .
-                    docker push ${IMAGE_NAME}:${GIT_COMMIT}
-                    docker push ${IMAGE_NAME}:latest
-                """
-            }
-        }
-
-        // ── Stage 5: Deploy to K8s ────────────────────────────────────────────
-        stage("Deploy to K8s") {
-            agent any
-            when {
-                branch "main"
-            }
-            environment {
-                KUBECONFIG = credentials("kubeconfig")
-            }
-            steps {
-                sh """
-                    helm upgrade --install sentiment-api ./helm/mlops-chart \\
-                        --namespace sentiment-prod \\
-                        --create-namespace \\
-                        --set image.repository=${IMAGE_NAME} \\
-                        --set image.tag=${GIT_COMMIT} \\
-                        --set config.modelVersion=${GIT_COMMIT} \\
-                        --atomic \\
-                        --timeout 3m
-
-                    kubectl rollout status deployment/sentiment-api \\
-                        -n sentiment-prod --timeout=2m
-                """
+                withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+                    sh '''
+                        helm upgrade --install sentiment-api helm/sentiment-api \
+                            --namespace sentiment-prod --create-namespace \
+                            --set image.repository="$IMAGE" \
+                            --set image.tag="sha-$GIT_COMMIT" \
+                            --set config.modelVersion="sha-$GIT_COMMIT" \
+                            --rollback-on-failure --wait --timeout 5m
+                        kubectl -n sentiment-prod port-forward svc/sentiment-api 8000:80 >/dev/null 2>&1 &
+                        python3 scripts/smoke_test.py http://localhost:8000
+                    '''
+                }
             }
         }
     }
 
     post {
-        always {
-            cleanWs()
-        }
-        success {
-            echo "✅ Pipeline succeeded — sentiment-api deployed to sentiment-prod"
-        }
-        failure {
-            echo "❌ Pipeline failed — check logs above"
-        }
+        success { echo 'Pipeline succeeded' }
+        failure { echo 'Pipeline failed: see stage logs above' }
     }
 }
