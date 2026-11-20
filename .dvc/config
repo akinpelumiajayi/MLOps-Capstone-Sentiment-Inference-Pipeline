@@ -1,6 +1,5 @@
 [core]
-    remote = myremote
     autostage = true
-
-['remote "myremote"']
-    url = s3://your-bucket-name/dvc-store
+# No remote is committed. CI adds one from the DVC_REMOTE_URL repository
+# variable; locally run e.g.
+#   dvc remote add -d storage s3://<bucket>/dvc-store

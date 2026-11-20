@@ -1,6 +1,43 @@
+# Single source of truth for every pipeline stage. DVC re-runs only the stages
+# whose parameters below have changed (`dvc params diff` shows what moved).
+
+data:
+  dataset: cornell-movie-review-data/rotten_tomatoes
+  revision: aa13bc287fa6fcab6daf52f0dfb9994269ffea28   # pinned Hugging Face commit
+  min_text_chars: 3
+  max_text_chars: 5000
+
+validation:
+  min_rows: {train: 8000, validation: 1000, test: 1000}
+  max_majority_class_share: 0.6
+
 train:
-  C: 1.0
+  model: logreg               # logreg | linear_svc | complement_nb
+  C_grid: [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
   ngram_max: 2
-  max_features: 5000
-  test_size: 0.2
+  max_features: 100000
+  min_df: 1
   random_seed: 42
+
+evaluate:
+  latency_samples: 500
+
+compare:
+  # model -> grid of C (linear models) or alpha (Naive Bayes)
+  models:
+    logreg: [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
+    linear_svc: [0.05, 0.1, 0.25, 0.5, 1.0]
+    complement_nb: [0.1, 0.3, 0.5, 1.0]
+
+gate:
+  min_f1: 0.75
+  min_accuracy: 0.75
+  max_f1_regression: 0.01     # allowed drop vs. the model currently on main
+  max_p95_latency_ms: 25
+
+serve:
+  decision_threshold: 0.5     # P(positive) >= threshold -> "positive"
+
+mlflow:
+  experiment: sentiment-rotten-tomatoes
+  registered_model: sentiment-classifier
