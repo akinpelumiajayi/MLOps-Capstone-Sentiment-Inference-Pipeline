@@ -1,0 +1,112 @@
+# ---- image -------------------------------------------------------------------
+# Both values are required: deploy an immutable, commit-addressed tag
+# (CI sets sha-<git sha>), never a moving tag like `latest`.
+image:
+  repository: ""
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 2   # ignored when hpa.enabled
+
+# ---- application config (becomes env vars via a ConfigMap) --------------------
+config:
+  decisionThreshold: "0.5"
+  lowConfidenceThreshold: "0.65"
+  maxTextLength: "5000"
+  maxBatchSize: "100"
+  driftWindowSize: "500"
+  logLevel: INFO
+  modelVersion: ""   # empty = use the version stored in the model's metadata.json
+
+# ---- pod ---------------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi   # no CPU limit: avoids throttling; HPA scales on CPU requests
+
+terminationGracePeriodSeconds: 30
+
+probes:
+  startup:   {path: /readyz, periodSeconds: 2, failureThreshold: 30}
+  liveness:  {path: /healthz, periodSeconds: 10, failureThreshold: 3}
+  readiness: {path: /readyz, periodSeconds: 5, failureThreshold: 2}
+
+# Spread replicas across nodes so one node failure cannot take the service down.
+topologySpread:
+  enabled: true
+  maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ---- service / ingress -------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  host: sentiment.example.com
+  tls:
+    enabled: false
+    secretName: sentiment-api-tls
+
+# ---- availability ------------------------------------------------------------
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+  targetCPUUtilization: 60
+  # Scale up fast, scale down slowly to avoid flapping.
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies: [{type: Percent, value: 100, periodSeconds: 30}]
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies: [{type: Pods, value: 1, periodSeconds: 60}]
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# ---- monitoring (needs the Prometheus Operator CRDs, e.g. kube-prometheus-stack)
+# Resources are skipped automatically when the CRDs are not installed.
+monitoring:
+  serviceMonitor:
+    enabled: true
+    interval: 15s
+  prometheusRule:
+    enabled: true
+  # Must match the kube-prometheus-stack release's selector label.
+  releaseLabel: kube-prom

@@ -1,0 +1,19 @@
+# Overrides for a local kind cluster (see `make kind-deploy`).
+image:
+  repository: sentiment-api
+  tag: local
+  pullPolicy: Never   # image is side-loaded with `kind load docker-image`
+
+hpa:
+  minReplicas: 1
+  maxReplicas: 4
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 384Mi
+
+topologySpread:
+  enabled: false   # single-node cluster

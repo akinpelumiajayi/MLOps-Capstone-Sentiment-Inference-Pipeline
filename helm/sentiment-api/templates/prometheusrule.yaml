@@ -1,0 +1,14 @@
+{{- if and .Values.monitoring.prometheusRule.enabled (include "sentiment-api.hasPromOperator" .) }}
+{{- /* Rules come from files/alerts.yml, the same file docker compose mounts. */}}
+{{- $rules := .Files.Get "files/alerts.yml" | fromYaml }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "sentiment-api.fullname" . }}
+  labels:
+    {{- include "sentiment-api.labels" . | nindent 4 }}
+    release: {{ .Values.monitoring.releaseLabel }}
+spec:
+  groups:
+    {{- toYaml $rules.groups | nindent 4 }}
+{{- end }}

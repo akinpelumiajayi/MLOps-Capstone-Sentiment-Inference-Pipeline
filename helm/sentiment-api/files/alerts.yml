@@ -1,0 +1,82 @@
+# Alert rules for the sentiment API: the single source of truth.
+# docker compose mounts this file into Prometheus, and the Helm chart renders
+# it into a PrometheusRule (templates/prometheusrule.yaml).
+groups:
+  - name: sentiment-api.availability
+    rules:
+      - alert: SentimentAPIDown
+        expr: up{job=~".*sentiment-api.*"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "Sentiment API target {{ $labels.instance }} is down"
+          runbook: docs/runbook.md#sentimentapidown
+
+      - alert: SentimentModelNotLoaded
+        expr: sentiment_model_loaded == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "No model loaded on {{ $labels.instance }}"
+          runbook: docs/runbook.md#sentimentmodelnotloaded
+
+      - alert: SentimentHighErrorRate
+        expr: |
+          sum(rate(sentiment_http_requests_total{status=~"5.."}[5m]))
+            / clamp_min(sum(rate(sentiment_http_requests_total[5m])), 1e-9) > 0.02
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "More than 2% of requests are failing with 5xx"
+          runbook: docs/runbook.md#sentimenthigherrorrate
+
+  - name: sentiment-api.latency
+    rules:
+      - alert: SentimentHighP95Latency
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(sentiment_http_request_duration_seconds_bucket{route="/predict"}[5m]))) > 0.1
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "p95 /predict latency above 100 ms"
+          runbook: docs/runbook.md#sentimenthighp95latency
+
+  - name: sentiment-api.model-quality
+    rules:
+      - alert: SentimentPredictionDrift
+        expr: max(sentiment_drift_score_psi) > 0.2 and on() min(sentiment_drift_window_size) >= 200
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "Score distribution drifted from the training reference"
+          runbook: docs/runbook.md#sentimentpredictiondrift
+
+      - alert: SentimentPositiveRateShift
+        expr: |
+          abs(avg(sentiment_drift_positive_rate) - avg(sentiment_drift_reference_positive_rate)) > 0.15
+            and on() min(sentiment_drift_window_size) >= 200
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "Positive-prediction rate moved more than 15 points from reference"
+          runbook: docs/runbook.md#sentimentpositiverateshift
+
+      - alert: SentimentHighOOVRate
+        expr: |
+          sum(rate(sentiment_oov_ratio_sum[30m])) / clamp_min(sum(rate(sentiment_oov_ratio_count[30m])), 1e-9) > 0.4
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "Over 40% of input tokens are unknown to the model (domain shift?)"
+          runbook: docs/runbook.md#sentimenthighoovrate
+
+      - alert: SentimentLowConfidenceSpike
+        expr: |
+          sum(rate(sentiment_low_confidence_total[15m]))
+            / clamp_min(sum(rate(sentiment_predictions_total[15m])), 1e-9) > 0.5
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "More than half of predictions are low-confidence"
+          runbook: docs/runbook.md#sentimentlowconfidencespike
