@@ -1,0 +1,66 @@
+{
+  "best_C": 8.0,
+  "dataset": {
+    "dataset": "cornell-movie-review-data/rotten_tomatoes",
+    "files": {
+      "test": {
+        "sha256": "5427a2b59d1b9bed1ea5cc3f963843bd13ea7443f32d27e74a957a3d181cc545",
+        "url": "https://huggingface.co/datasets/cornell-movie-review-data/rotten_tomatoes/resolve/aa13bc287fa6fcab6daf52f0dfb9994269ffea28/test.parquet"
+      },
+      "train": {
+        "sha256": "f899e3cb8124a12b7d82c30ba5cd35d27eb6575d1b10d65f731a60348454a959",
+        "url": "https://huggingface.co/datasets/cornell-movie-review-data/rotten_tomatoes/resolve/aa13bc287fa6fcab6daf52f0dfb9994269ffea28/train.parquet"
+      },
+      "validation": {
+        "sha256": "3ea894e394cd24413b781790683924a2598507d146da9b4ad0a2a01830c77b00",
+        "url": "https://huggingface.co/datasets/cornell-movie-review-data/rotten_tomatoes/resolve/aa13bc287fa6fcab6daf52f0dfb9994269ffea28/validation.parquet"
+      }
+    },
+    "revision": "aa13bc287fa6fcab6daf52f0dfb9994269ffea28"
+  },
+  "grid_search": [
+    {
+      "C": 1.0,
+      "val_accuracy": 0.7495309568480301,
+      "val_f1": 0.7548209366391184
+    },
+    {
+      "C": 2.0,
+      "val_accuracy": 0.7504690431519699,
+      "val_f1": 0.7546125461254612
+    },
+    {
+      "C": 4.0,
+      "val_accuracy": 0.7542213883677298,
+      "val_f1": 0.7587476979742173
+    },
+    {
+      "C": 8.0,
+      "val_accuracy": 0.7598499061913696,
+      "val_f1": 0.7634011090573013
+    },
+    {
+      "C": 16.0,
+      "val_accuracy": 0.7589118198874296,
+      "val_f1": 0.7618164967562558
+    },
+    {
+      "C": 32.0,
+      "val_accuracy": 0.7560975609756098,
+      "val_f1": 0.7574626865671642
+    }
+  ],
+  "mlflow_run_id": "50c112bc3284471c8545bd802606792f",
+  "model_type": "logreg",
+  "n_train_rows": 9596,
+  "package_version": "3.0.0",
+  "python_version": "3.14.10",
+  "sklearn_version": "1.9.1",
+  "trained_at": "2026-11-20T23:34:39+00:00",
+  "validation": {
+    "accuracy": 0.7598499061913696,
+    "f1": 0.7634011090573013
+  },
+  "version": "logreg-local",
+  "vocabulary_size": 100000
+}
