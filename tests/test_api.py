@@ -1,74 +1,128 @@
-"""
-API integration tests.
+from __future__ import annotations
 
-Run:  pytest tests/test_api.py -v
-"""
-import os
-import joblib
-import tempfile
+from pathlib import Path
+from typing import Any
+
 import pytest
 from fastapi.testclient import TestClient
-from sklearn.pipeline import Pipeline
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
+
+from sentiment.api.main import create_app
+from sentiment.api.settings import Settings
 
 
-# ── build a minimal trained model before importing the app ───────────────────
-@pytest.fixture(scope="session", autouse=True)
-def trained_model(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("models")
-    model_path = tmp / "model.pkl"
-
-    pipeline = Pipeline([
-        ("tfidf", TfidfVectorizer()),
-        ("clf",   LogisticRegression(max_iter=200)),
-    ])
-    texts  = ["great product", "terrible product", "love it", "hate it",
-              "excellent", "awful", "good", "bad", "perfect", "broken"]
-    labels = [1, 0, 1, 0, 1, 0, 1, 0, 1, 0]
-    pipeline.fit(texts, labels)
-    joblib.dump(pipeline, model_path)
-
-    os.environ["MODEL_PATH"] = str(model_path)
-    return model_path
-
-
-@pytest.fixture(scope="session")
-def client(trained_model):
-    from app.main import app
-    return TestClient(app)
-
-
-# ── tests ─────────────────────────────────────────────────────────────────────
-def test_healthz(client):
+def test_healthz(client: TestClient) -> None:
     resp = client.get("/healthz")
     assert resp.status_code == 200
-    assert resp.json()["status"] == "ok"
+    assert resp.json() == {"status": "ok"}
 
 
-def test_predict_positive(client):
-    resp = client.post("/predict", json={"text": "This model is excellent and very accurate"})
+def test_readyz(client: TestClient) -> None:
+    resp = client.get("/readyz")
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["label"] in ("positive", "negative")   # valid label
-    assert 0.0 <= body["confidence"] <= 1.0
-    assert "model_version" in body
+    assert resp.json()["model_version"] == "test-v1"
 
 
-def test_predict_negative(client):
-    resp = client.post("/predict", json={"text": "Terrible results, completely broken"})
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("a wonderful and brilliant film, superb cast", "positive"),
+        ("a dull, boring and awful mess", "negative"),
+    ],
+)
+def test_predict_label(client: TestClient, text: str, expected: str) -> None:
+    resp = client.post("/predict", json={"text": text})
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["label"] in ("positive", "negative")
-    assert 0.0 <= body["confidence"] <= 1.0
+    assert resp.json()["label"] == expected
 
 
-def test_predict_empty_text(client):
-    resp = client.post("/predict", json={"text": "   "})
+@pytest.mark.parametrize("text", ["wonderful", "awful", "a film", "it was a movie with actors"])
+def test_confidence_matches_label(client: TestClient, text: str) -> None:
+    """Regression test: confidence is the probability of the *returned* label."""
+    body = client.post("/predict", json={"text": text}).json()
+    p_pos = body["positive_probability"]
+    assert 0.5 <= body["confidence"] <= 1.0
+    if body["label"] == "positive":
+        assert p_pos >= 0.5
+        assert body["confidence"] == pytest.approx(p_pos, abs=1e-4)
+    else:
+        assert p_pos < 0.5
+        assert body["confidence"] == pytest.approx(1 - p_pos, abs=1e-4)
+    assert body["low_confidence"] == (body["confidence"] < 0.65)
+
+
+@pytest.mark.parametrize("payload", [{"text": ""}, {"text": "   "}, {}, {"text": 123}])
+def test_predict_rejects_invalid_input(client: TestClient, payload: dict[str, Any]) -> None:
+    assert client.post("/predict", json=payload).status_code == 422
+
+
+def test_predict_rejects_too_long(client: TestClient) -> None:
+    resp = client.post("/predict", json={"text": "a" * 501})
     assert resp.status_code == 422
+    assert "500" in resp.json()["detail"]
 
 
-def test_metrics_endpoint(client):
-    resp = client.get("/metrics")
+def test_batch(client: TestClient) -> None:
+    resp = client.post("/predict/batch", json={"texts": ["wonderful film", "awful film", "great cast"]})
     assert resp.status_code == 200
-    assert "sentiment_requests_total" in resp.text
+    body = resp.json()
+    assert [p["label"] for p in body["predictions"]] == ["positive", "negative", "positive"]
+    assert body["model_version"] == "test-v1"
+
+
+def test_batch_limits(client: TestClient) -> None:
+    assert client.post("/predict/batch", json={"texts": ["good"] * 11}).status_code == 422
+    assert client.post("/predict/batch", json={"texts": []}).status_code == 422
+    assert client.post("/predict/batch", json={"texts": ["good", " "]}).status_code == 422
+    assert client.post("/predict/batch", json={"texts": ["good", "b" * 501]}).status_code == 422
+
+
+def test_info(client: TestClient) -> None:
+    body = client.get("/info").json()
+    assert body["model_type"] == "logreg"
+    assert body["decision_threshold"] == 0.5
+    assert body["validation_f1"] == 0.9
+    assert body["drift_reference_loaded"] is True
+
+
+def test_request_id_round_trip(client: TestClient) -> None:
+    assert client.get("/healthz", headers={"X-Request-ID": "abc123"}).headers["X-Request-ID"] == "abc123"
+    assert len(client.get("/healthz").headers["X-Request-ID"]) == 32
+
+
+def test_metrics_exposed(client: TestClient) -> None:
+    client.post("/predict", json={"text": "wonderful"})
+    client.get("/does-not-exist")
+    text = client.get("/metrics").text
+    for name in (
+        "sentiment_predictions_total",
+        "sentiment_http_requests_total",
+        "sentiment_inference_duration_seconds",
+        "sentiment_confidence_score",
+        "sentiment_oov_ratio",
+        "sentiment_drift_score_psi",
+        "sentiment_model_loaded 1.0",
+        'route="/predict"',
+        'route="unmatched"',
+    ):
+        assert name in text, name
+
+
+def test_model_version_override(settings: Settings) -> None:
+    custom = settings.model_copy(update={"model_version": "sha-deadbeef"})
+    with TestClient(create_app(custom)) as c:
+        assert c.post("/predict", json={"text": "great"}).json()["model_version"] == "sha-deadbeef"
+
+
+def test_works_without_reference_profile(settings: Settings, tmp_path: Path) -> None:
+    custom = settings.model_copy(update={"reference_profile_path": tmp_path / "none.json"})
+    with TestClient(create_app(custom)) as c:
+        assert c.post("/predict", json={"text": "great"}).status_code == 200
+        assert c.get("/info").json()["drift_reference_loaded"] is False
+
+
+def test_not_ready_without_model(tmp_path: Path) -> None:
+    settings = Settings(model_path=tmp_path / "missing.pkl")
+    with TestClient(create_app(settings)) as c:
+        assert c.get("/healthz").status_code == 200
+        assert c.get("/readyz").status_code == 503
+        assert c.post("/predict", json={"text": "great"}).status_code == 503
