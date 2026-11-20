@@ -1,7 +1,7 @@
-scikit-learn==1.8.0
-joblib==1.5.3
-numpy==2.4.4
-scipy==1.17.1
-pyyaml==6.0.2
-dvc==3.56.0
-dvc-s3==3.2.0
+# Training pipeline = API runtime + data/experiment tooling.
+-r requirements.txt
+pandas==3.1.1
+pyarrow==26.0.1
+dvc==3.67.1
+dvc-s3==3.3.0
+mlflow==3.18.0

@@ -1,57 +1,46 @@
 {
-  "folders": [
-    {
-      "path": "."
-    }
-  ],
+  "folders": [{ "path": "." }],
   "settings": {
     "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+    "python.analysis.extraPaths": ["${workspaceFolder}/src"],
     "python.testing.pytestEnabled": true,
-    "python.testing.pytestArgs": ["tests/"],
     "python.testing.unittestEnabled": false,
     "editor.formatOnSave": true,
     "[python]": {
-      "editor.defaultFormatter": "ms-python.black-formatter"
+      "editor.defaultFormatter": "charliermarsh.ruff",
+      "editor.codeActionsOnSave": { "source.organizeImports": "explicit" }
     },
-    "files.exclude": {
-      "**/__pycache__": true,
-      "**/*.pyc": true
-    }
+    "files.exclude": { "**/__pycache__": true, "**/*.pyc": true }
   },
   "launch": {
     "version": "0.2.0",
     "configurations": [
       {
-        "name": "FastAPI (uvicorn)",
-        "type": "python",
+        "name": "API (uvicorn --reload)",
+        "type": "debugpy",
         "request": "launch",
         "module": "uvicorn",
-        "args": ["app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"],
-        "env": {
-          "MODEL_PATH": "models/model.pkl",
-          "CONFIDENCE_THRESHOLD": "0.65",
-          "MODEL_VERSION": "v1"
-        },
+        "args": ["sentiment.api.main:app", "--port", "8000", "--reload"],
+        "env": { "PYTHONPATH": "${workspaceFolder}/src" },
         "cwd": "${workspaceFolder}",
         "console": "integratedTerminal"
       },
       {
         "name": "Streamlit dashboard",
-        "type": "python",
+        "type": "debugpy",
         "request": "launch",
         "module": "streamlit",
         "args": ["run", "streamlit_app/app.py"],
-        "env": {
-          "API_URL": "http://localhost:8000"
-        },
+        "env": { "API_URL": "http://localhost:8000" },
         "cwd": "${workspaceFolder}",
         "console": "integratedTerminal"
       },
       {
-        "name": "Train model",
-        "type": "python",
+        "name": "Train (no DVC)",
+        "type": "debugpy",
         "request": "launch",
-        "program": "${workspaceFolder}/training/train.py",
+        "module": "sentiment.pipeline",
+        "env": { "PYTHONPATH": "${workspaceFolder}/src" },
         "cwd": "${workspaceFolder}",
         "console": "integratedTerminal"
       }
@@ -60,13 +49,12 @@
   "extensions": {
     "recommendations": [
       "ms-python.python",
-      "ms-python.black-formatter",
-      "ms-python.pylint",
+      "charliermarsh.ruff",
+      "ms-python.mypy-type-checker",
       "ms-azuretools.vscode-docker",
       "ms-kubernetes-tools.vscode-kubernetes-tools",
       "redhat.vscode-yaml",
       "iterative.dvc",
-      "eamodio.gitlens",
       "GitHub.vscode-github-actions"
     ]
   }

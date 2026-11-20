@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentiment"
+version = "3.0.0"
+description = "End-to-end MLOps pipeline for a sentiment classification service"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+# Abstract dependencies. Exact, reproducible pins live in requirements*.txt.
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "prometheus-client>=0.20",
+  "scikit-learn>=1.6",
+  "joblib>=1.4",
+  "numpy>=2.0",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+train = ["pandas>=2.2", "pyarrow>=16", "dvc>=3.50", "mlflow>=3.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# ── ruff ──────────────────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "S", "C4", "RUF", "PT", "N"]
+ignore = ["N803", "N806"]  # `C` (sklearn's name for regularisation) is fine
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105"]
+"loadtest/**" = ["S311"]
+"streamlit_app/**" = ["S113"]
+
+# ── mypy ──────────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src"
+packages = ["sentiment"]
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["sklearn.*", "joblib.*", "mlflow.*", "pandas.*", "scipy.*"]
+ignore_missing_imports = true
+
+# ── pytest / coverage ─────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra --strict-markers"
+filterwarnings = ["ignore::DeprecationWarning:mlflow.*"]
+
+[tool.coverage.run]
+source = ["sentiment"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 85
+exclude_also = ["if __name__ == .__main__.:"]

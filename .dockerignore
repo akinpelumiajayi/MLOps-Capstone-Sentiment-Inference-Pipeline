@@ -1,0 +1,27 @@
+# Keep the build context small and secret-free.
+.git
+.github
+.dvc/cache
+.dvc/tmp
+.venv
+venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+mlflow.db
+mlruns
+mlartifacts
+data
+reports
+docs
+helm
+jenkins
+tests
+loadtest
+monitoring
+.env
+*.env
