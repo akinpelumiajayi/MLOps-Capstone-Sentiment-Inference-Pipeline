@@ -1,0 +1,7 @@
+apiVersion: v2
+name: sentiment-api
+description: Sentiment inference API with autoscaling, disruption budget and Prometheus monitoring
+type: application
+version: 3.0.0
+appVersion: "3.0.0"
+keywords: [mlops, fastapi, scikit-learn, prometheus]

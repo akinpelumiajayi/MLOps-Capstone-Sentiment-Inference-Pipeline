@@ -1,0 +1,10 @@
+-r requirements-train.txt
+pytest==9.2.0
+pytest-cov==7.1.0
+httpx2==2.16.2
+ruff==0.17.6
+mypy==2.4.1
+types-PyYAML==6.0.12.20261113
+types-requests==2.33.0.20261030
+pre-commit==4.7.0
+locust==2.47.0

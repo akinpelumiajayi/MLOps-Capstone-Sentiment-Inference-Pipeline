@@ -1,0 +1,287 @@
+name: CI/CD
+
+# PRs:          quality -> helm -> train + quality gate -> e2e on kind
+# Push to main: ... -> publish image to GHCR -> deploy (opt-in, see README)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  HELM_VERSION: v4.3.2
+  KUBECONFORM_VERSION: v0.8.0
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+
+jobs:
+  # ---- 1. Lint, type-check, unit + integration tests --------------------------
+  quality:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # tokenless Codecov upload via OIDC
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt -e .
+      - name: Ruff (lint + format)
+        run: |
+          ruff check .
+          ruff format --check .
+      - name: Mypy (strict)
+        run: mypy
+      - name: Pytest with coverage
+        run: pytest --cov --cov-report=xml --cov-report=term --junitxml=junit.xml
+      - uses: codecov/codecov-action@v7
+        if: ${{ !cancelled() }}
+        with:
+          files: coverage.xml
+          use_oidc: true
+          fail_ci_if_error: false
+
+  # ---- 2. Helm chart: lint + render + schema validation -----------------------
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: Install kubeconform
+        run: |
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar xz -C /usr/local/bin kubeconform
+      - name: Lint and validate
+        run: |
+          SET="--set image.repository=ghcr.io/example/sentiment-api --set image.tag=sha-test"
+          helm lint helm/sentiment-api $SET --strict
+          # Render with and without the Prometheus Operator CRDs present.
+          helm template sentiment-api helm/sentiment-api $SET --api-versions monitoring.coreos.com/v1 \
+              --set ingress.enabled=true | kubeconform -strict -summary -ignore-missing-schemas
+          helm template sentiment-api helm/sentiment-api -f helm/sentiment-api/values-kind.yaml \
+            | kubeconform -strict -summary
+          # Guard rails must reject mutable / missing tags.
+          ! helm template x helm/sentiment-api --set image.repository=r --set image.tag=latest
+          ! helm template x helm/sentiment-api
+
+  # ---- 3. DVC pipeline + model quality gate ------------------------------------
+  train:
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # AWS OIDC for the (optional) DVC remote
+    env:
+      DVC_REMOTE_URL: ${{ vars.DVC_REMOTE_URL }}
+      GIT_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-train.txt -e .
+
+      - name: Baseline = metrics of the model currently on main
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --depth=1 origin "${{ github.base_ref }}"
+            REF=FETCH_HEAD
+          else
+            REF=HEAD^
+          fi
+          git show "$REF:reports/metrics.json" > baseline_metrics.json 2>/dev/null \
+            && echo "Baseline from $REF" || { echo "No baseline yet"; rm -f baseline_metrics.json; }
+
+      - name: Configure AWS credentials (OIDC, no long-lived keys)
+        if: env.DVC_REMOTE_URL != ''
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-2' }}
+      - name: Configure DVC remote and pull cache
+        if: env.DVC_REMOTE_URL != ''
+        run: |
+          dvc remote add --default --force storage "$DVC_REMOTE_URL"
+          dvc pull --allow-missing || echo "Cold cache; stages will run from scratch"
+
+      - name: dvc repro
+        run: dvc repro
+
+      - name: Metrics vs. committed
+        run: |
+          {
+            echo "### Metrics (workspace vs. committed)"
+            dvc metrics diff --md --precision 4 || true
+            echo
+            echo "### Model comparison"
+            cat reports/model_comparison.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Quality gate
+        run: python -m sentiment.gate --baseline baseline_metrics.json --promote
+
+      - name: Push data + model to DVC remote
+        if: env.DVC_REMOTE_URL != '' && github.event_name == 'push'
+        run: dvc push
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: model
+          path: |
+            models/model.pkl
+            models/metadata.json
+            models/reference_profile.json
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: reports-and-mlflow
+          path: |
+            reports/
+            mlflow.db
+            mlruns/
+          retention-days: 30
+
+  # ---- 4. End-to-end: real image on a real (kind) Kubernetes cluster -----------
+  e2e:
+    needs: [train, helm]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: model
+          path: models/
+      - uses: docker/setup-buildx-action@v4
+      - name: Build runtime image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: runtime
+          tags: sentiment-api:local
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: mlops
+      - uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: Deploy with Helm
+        run: |
+          kind load docker-image sentiment-api:local --name mlops
+          helm upgrade --install sentiment-api helm/sentiment-api -f helm/sentiment-api/values-kind.yaml \
+            --namespace sentiment --create-namespace --wait --timeout 3m
+          kubectl -n sentiment get pods,svc,hpa,pdb
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Smoke test and short load test through the Service
+        run: |
+          kubectl -n sentiment port-forward svc/sentiment-api 8000:80 >/dev/null 2>&1 &
+          python scripts/smoke_test.py http://localhost:8000
+          pip install -q locust==2.47.0
+          mkdir -p reports
+          locust -f loadtest/locustfile.py --host http://localhost:8000 --headless \
+            -u 20 -r 10 -t 30s --csv reports/e2e-loadtest --only-summary --exit-code-on-error 1
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl -n sentiment describe pods
+          kubectl -n sentiment logs -l app.kubernetes.io/name=sentiment-api --tail=200
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: e2e-loadtest
+          path: reports/e2e-loadtest*
+
+  # ---- 5. Publish the image that passed e2e ---------------------------------------
+  publish:
+    needs: e2e
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.vars.outputs.image }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: model
+          path: models/
+      - id: vars
+        # GHCR requires lowercase repository names.
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}/sentiment-api" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.vars.outputs.image }}
+          tags: |
+            type=sha,format=long,prefix=sha-
+            type=raw,value=latest
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: runtime
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---- 6. Deploy (opt-in: set repo variable DEPLOY_ENABLED=true) ---------------
+  deploy:
+    needs: publish
+    if: vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: production   # add required reviewers in repo settings
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+      - name: Helm upgrade (rolls back automatically on failure)
+        run: |
+          helm upgrade --install sentiment-api helm/sentiment-api \
+            --namespace sentiment-prod --create-namespace \
+            --set image.repository=${{ needs.publish.outputs.image }} \
+            --set image.tag=sha-${{ github.sha }} \
+            --set config.modelVersion=sha-${{ github.sha }} \
+            --rollback-on-failure --wait --timeout 5m
+      - name: Post-deploy smoke test
+        run: |
+          kubectl -n sentiment-prod port-forward svc/sentiment-api 8000:80 >/dev/null 2>&1 &
+          python3 scripts/smoke_test.py http://localhost:8000

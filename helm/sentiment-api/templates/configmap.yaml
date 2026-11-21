@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sentiment-api.fullname" . }}-config
+  labels:
+    {{- include "sentiment-api.labels" . | nindent 4 }}
+data:
+  DECISION_THRESHOLD: {{ .Values.config.decisionThreshold | quote }}
+  LOW_CONFIDENCE_THRESHOLD: {{ .Values.config.lowConfidenceThreshold | quote }}
+  MAX_TEXT_LENGTH: {{ .Values.config.maxTextLength | quote }}
+  MAX_BATCH_SIZE: {{ .Values.config.maxBatchSize | quote }}
+  DRIFT_WINDOW_SIZE: {{ .Values.config.driftWindowSize | quote }}
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  {{- with .Values.config.modelVersion }}
+  MODEL_VERSION: {{ . | quote }}
+  {{- end }}

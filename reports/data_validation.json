@@ -1,0 +1,178 @@
+{
+  "checks": [
+    {
+      "detail": {
+        "missing_columns": []
+      },
+      "name": "train.schema",
+      "passed": true
+    },
+    {
+      "detail": {
+        "min": 8000,
+        "rows": 8530
+      },
+      "name": "train.min_rows",
+      "passed": true
+    },
+    {
+      "detail": {
+        "empty": 0,
+        "nulls": 0
+      },
+      "name": "train.no_null_or_empty",
+      "passed": true
+    },
+    {
+      "detail": {
+        "labels": [
+          0,
+          1
+        ]
+      },
+      "name": "train.label_domain",
+      "passed": true
+    },
+    {
+      "detail": {
+        "majority_share": 0.5,
+        "max": 0.6
+      },
+      "name": "train.class_balance",
+      "passed": true
+    },
+    {
+      "detail": {},
+      "name": "train.no_duplicates",
+      "passed": true
+    },
+    {
+      "detail": {
+        "missing_columns": []
+      },
+      "name": "validation.schema",
+      "passed": true
+    },
+    {
+      "detail": {
+        "min": 1000,
+        "rows": 1066
+      },
+      "name": "validation.min_rows",
+      "passed": true
+    },
+    {
+      "detail": {
+        "empty": 0,
+        "nulls": 0
+      },
+      "name": "validation.no_null_or_empty",
+      "passed": true
+    },
+    {
+      "detail": {
+        "labels": [
+          0,
+          1
+        ]
+      },
+      "name": "validation.label_domain",
+      "passed": true
+    },
+    {
+      "detail": {
+        "majority_share": 0.5,
+        "max": 0.6
+      },
+      "name": "validation.class_balance",
+      "passed": true
+    },
+    {
+      "detail": {},
+      "name": "validation.no_duplicates",
+      "passed": true
+    },
+    {
+      "detail": {
+        "missing_columns": []
+      },
+      "name": "test.schema",
+      "passed": true
+    },
+    {
+      "detail": {
+        "min": 1000,
+        "rows": 1066
+      },
+      "name": "test.min_rows",
+      "passed": true
+    },
+    {
+      "detail": {
+        "empty": 0,
+        "nulls": 0
+      },
+      "name": "test.no_null_or_empty",
+      "passed": true
+    },
+    {
+      "detail": {
+        "labels": [
+          0,
+          1
+        ]
+      },
+      "name": "test.label_domain",
+      "passed": true
+    },
+    {
+      "detail": {
+        "majority_share": 0.5,
+        "max": 0.6
+      },
+      "name": "test.class_balance",
+      "passed": true
+    },
+    {
+      "detail": {},
+      "name": "test.no_duplicates",
+      "passed": true
+    },
+    {
+      "detail": {
+        "overlap": 0
+      },
+      "name": "no_overlap.train-validation",
+      "passed": true
+    },
+    {
+      "detail": {
+        "overlap": 0
+      },
+      "name": "no_overlap.train-test",
+      "passed": true
+    },
+    {
+      "detail": {
+        "overlap": 0
+      },
+      "name": "no_overlap.validation-test",
+      "passed": true
+    }
+  ],
+  "leakage_removed": {
+    "test": 0,
+    "validation": 0
+  },
+  "passed": true,
+  "raw_rows": {
+    "test": 1066,
+    "train": 8530,
+    "validation": 1066
+  },
+  "rows": {
+    "test": 1066,
+    "train": 8530,
+    "validation": 1066
+  }
+}

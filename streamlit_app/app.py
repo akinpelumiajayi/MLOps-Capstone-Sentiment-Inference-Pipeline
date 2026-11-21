@@ -1,193 +1,174 @@
+"""Streamlit front-end for the sentiment API.
+
+Tabs: live inference | batch analysis | live service metrics.
+All thresholds come from the API's /info endpoint, so the UI always reflects
+how the server actually labels text.
 """
-Streamlit dashboard — Sentiment MLOps Capstone
-3 tabs: Live Inference | Batch Analysis | Prometheus Metrics
-"""
+
+from __future__ import annotations
+
+import os
 import time
-import requests
+from typing import Any
+
 import pandas as pd
 import plotly.express as px
+import requests
 import streamlit as st
 
-API_URL = __import__("os").getenv("API_URL", "http://localhost:8000")
+API_URL = os.getenv("API_URL", "http://localhost:8000")
+COLORS = {"positive": "#1a9850", "negative": "#d73027"}
+DEMO_TEXTS = [
+    "A gripping, beautifully shot film with a career-best performance at its heart.",
+    "Two hours of my life I will never get back. Dull, smug and badly paced.",
+    "Funny, warm and surprisingly moving; the cast clearly had a great time.",
+    "The plot is a mess and the dialogue is painfully clunky.",
+    "Not perfect, but ambitious and often thrilling.",
+    "It looks expensive, yet it feels completely hollow.",
+]
 
-st.set_page_config(
-    page_title="Sentiment MLOps Dashboard",
-    page_icon="🤖",
-    layout="wide",
-)
+st.set_page_config(page_title="Sentiment MLOps", page_icon=":bar_chart:", layout="wide")
 
-# ── sidebar ───────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.title("⚙️ Settings")
-    threshold   = st.slider("Confidence threshold", 0.5, 1.0, 0.65, 0.05)
-    batch_limit = st.number_input("Batch size limit", 10, 500, 100)
-    auto_refresh = st.checkbox("Auto-refresh metrics (30 s)")
 
-    st.markdown("---")
-    st.subheader("🏥 API Health")
+@st.cache_data(ttl=30)
+def get_info() -> dict[str, Any] | None:
     try:
-        r = requests.get(f"{API_URL}/healthz", timeout=3)
-        if r.status_code == 200:
-            data = r.json()
-            st.success(f"✅ Online  |  model: `{data.get('model_version','?')}`")
-        else:
-            st.error(f"❌ HTTP {r.status_code}")
-    except Exception as e:
-        st.error(f"❌ Unreachable\n{e}")
+        r = requests.get(f"{API_URL}/info", timeout=3)
+        return r.json() if r.ok else None
+    except requests.RequestException:
+        return None
 
-    st.markdown("---")
+
+def predict_batch(texts: list[str], batch_size: int) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for i in range(0, len(texts), batch_size):
+        chunk = texts[i : i + batch_size]
+        r = requests.post(f"{API_URL}/predict/batch", json={"texts": chunk}, timeout=30)
+        r.raise_for_status()
+        for text, p in zip(chunk, r.json()["predictions"], strict=True):
+            results.append({"text": text, **p})
+    return results
+
+
+info = get_info()
+
+# ---- sidebar -----------------------------------------------------------------
+with st.sidebar:
+    st.title("Sentiment API")
+    if info:
+        st.success(f"Online - model `{info['model_version']}`")
+        st.markdown(
+            f"""
+| Setting | Value |
+|---|---|
+| Model type | `{info.get("model_type")}` |
+| Trained at | {info.get("trained_at") or "-"} |
+| Validation F1 | {info.get("validation_f1") or 0:.3f} |
+| Decision threshold | {info["decision_threshold"]} |
+| Low-confidence below | {info["low_confidence_threshold"]} |
+| Max batch size | {info["max_batch_size"]} |
+"""
+        )
+    else:
+        st.error("API unreachable or model not loaded")
     st.caption(f"API: `{API_URL}`")
 
-# ── tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3 = st.tabs(["🔍 Live Inference", "📊 Batch Analysis", "📈 Metrics"])
+tab_live, tab_batch, tab_metrics = st.tabs(["Live inference", "Batch analysis", "Service metrics"])
 
-# ── tab 1: live inference ─────────────────────────────────────────────────────
-with tab1:
-    st.header("Live Sentiment Inference")
-    user_text = st.text_area("Enter review text:", height=150,
-                              placeholder="e.g. The model accuracy is outstanding…")
-
-    if st.button("Predict", type="primary"):
-        if not user_text.strip():
+# ---- live inference ----------------------------------------------------------
+with tab_live:
+    st.header("Live inference")
+    text = st.text_area("Review text", height=140, placeholder="e.g. A gripping, beautifully shot film...")
+    if st.button("Predict", type="primary", disabled=info is None):
+        if not text.strip():
             st.warning("Please enter some text.")
         else:
-            with st.spinner("Calling API…"):
-                t0 = time.perf_counter()
-                try:
-                    resp = requests.post(
-                        f"{API_URL}/predict",
-                        json={"text": user_text},
-                        timeout=10,
-                    )
-                    latency_ms = (time.perf_counter() - t0) * 1000
-                    if resp.status_code == 200:
-                        result = resp.json()
-                        label = result["label"]
-                        conf  = result["confidence"]
-                        emoji = "😊" if label == "positive" else "😞"
-                        color = "green" if label == "positive" else "red"
+            t0 = time.perf_counter()
+            resp = requests.post(f"{API_URL}/predict", json={"text": text}, timeout=10)
+            latency_ms = (time.perf_counter() - t0) * 1000
+            if resp.ok:
+                res = resp.json()
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Sentiment", res["label"].capitalize())
+                c2.metric("Confidence", f"{res['confidence']:.1%}")
+                c3.metric("Round-trip latency", f"{latency_ms:.0f} ms")
+                st.progress(res["positive_probability"], text=f"P(positive) = {res['positive_probability']:.3f}")
+                if res["low_confidence"]:
+                    st.warning("Low-confidence prediction: consider routing this to human review.")
+                st.caption(f"Request ID: `{resp.headers.get('X-Request-ID')}`")
+            else:
+                st.error(f"API error {resp.status_code}: {resp.text}")
 
-                        col1, col2, col3 = st.columns(3)
-                        col1.metric("Sentiment", f"{emoji} {label.capitalize()}")
-                        col2.metric("Confidence", f"{conf:.1%}")
-                        col3.metric("Latency", f"{latency_ms:.1f} ms")
-
-                        st.progress(conf)
-                        if conf < threshold:
-                            st.warning(
-                                f"⚠️ Confidence {conf:.1%} is below your threshold "
-                                f"({threshold:.0%}) — treat with caution."
-                            )
-                    else:
-                        st.error(f"API error {resp.status_code}: {resp.text}")
-                except Exception as e:
-                    st.error(f"Request failed: {e}")
-
-# ── tab 2: batch analysis ─────────────────────────────────────────────────────
-with tab2:
-    st.header("Batch Sentiment Analysis")
-    uploaded = st.file_uploader("Upload CSV with a `text` column", type="csv")
-
-    demo_texts = [
-        "This model is surprisingly accurate and fast",
-        "Terrible accuracy, completely unreliable results",
-        "Works perfectly, highly recommend it",
-        "Crashes under load, very unstable deployment",
-        "Impressive accuracy on edge cases",
-        "Predictions are random at best, totally broken",
-    ]
-
+# ---- batch analysis ----------------------------------------------------------
+with tab_batch:
+    st.header("Batch analysis")
+    uploaded = st.file_uploader("CSV with a `text` column", type="csv")
     if uploaded:
-        df = pd.read_csv(uploaded).head(batch_limit)
-        if "text" not in df.columns:
+        df_in = pd.read_csv(uploaded)
+        if "text" not in df_in.columns:
             st.error("CSV must have a `text` column.")
             st.stop()
-        texts = df["text"].tolist()
+        texts = df_in["text"].dropna().astype(str).tolist()[:1000]
     else:
-        st.info("No file uploaded — using demo texts.")
-        texts = demo_texts
+        st.info("No file uploaded: using demo reviews.")
+        texts = DEMO_TEXTS
 
-    if st.button("Run Batch", type="primary"):
-        results = []
-        progress = st.progress(0)
-        for i, text in enumerate(texts):
+    if st.button("Run batch", type="primary", disabled=info is None):
+        try:
+            rows = predict_batch(texts, int(info["max_batch_size"]) if info else 100)
+        except requests.RequestException as exc:
+            st.error(f"Batch request failed: {exc}")
+            rows = []
+        if rows:
+            df = pd.DataFrame(rows)
+            c1, c2 = st.columns(2)
+            counts = df["label"].value_counts().rename_axis("label").reset_index(name="count")
+            c1.plotly_chart(
+                px.pie(counts, values="count", names="label", color="label", color_discrete_map=COLORS),
+                width="stretch",
+            )
+            c2.plotly_chart(
+                px.histogram(df, x="positive_probability", nbins=20, color="label", color_discrete_map=COLORS),
+                width="stretch",
+            )
+            st.metric("Low-confidence share", f"{df['low_confidence'].mean():.1%}")
+            st.dataframe(df[["text", "label", "confidence", "low_confidence"]], width="stretch")
+            st.download_button("Download results (CSV)", df.to_csv(index=False), "predictions.csv", "text/csv")
+
+
+# ---- service metrics -----------------------------------------------------------
+def parse_metrics(raw: str) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for line in raw.splitlines():
+        if line and not line.startswith("#"):
+            name, _, value = line.rpartition(" ")
             try:
-                r = requests.post(f"{API_URL}/predict", json={"text": text}, timeout=10)
-                if r.status_code == 200:
-                    d = r.json()
-                    results.append({
-                        "text": text[:80],
-                        "label": d["label"],
-                        "confidence": d["confidence"],
-                    })
-            except Exception:
-                pass
-            progress.progress((i + 1) / len(texts))
+                out[name] = float(value)
+            except ValueError:
+                continue
+    return out
 
-        if results:
-            df_res = pd.DataFrame(results)
-            col1, col2 = st.columns(2)
-            with col1:
-                counts = df_res["label"].value_counts().reset_index()
-                counts.columns = ["label", "count"]
-                fig = px.pie(counts, values="count", names="label",
-                             title="Label distribution",
-                             color="label",
-                             color_discrete_map={"positive": "#2ecc71", "negative": "#e74c3c"})
-                st.plotly_chart(fig, use_container_width=True)
-            with col2:
-                fig2 = px.histogram(df_res, x="confidence", nbins=10,
-                                    title="Confidence distribution",
-                                    color="label",
-                                    color_discrete_map={"positive": "#2ecc71", "negative": "#e74c3c"})
-                st.plotly_chart(fig2, use_container_width=True)
 
-            st.dataframe(df_res, use_container_width=True)
-
-# ── tab 3: prometheus metrics ─────────────────────────────────────────────────
-with tab3:
-    st.header("Prometheus Metrics")
-
-    if auto_refresh:
-        time.sleep(30)
-        st.rerun()
-
+@st.fragment(run_every="15s")
+def metrics_panel() -> None:
     try:
         raw = requests.get(f"{API_URL}/metrics", timeout=5).text
-        lines = [l for l in raw.splitlines() if not l.startswith("#") and l.strip()]
+    except requests.RequestException as exc:
+        st.error(f"Could not fetch metrics: {exc}")
+        return
+    m = parse_metrics(raw)
+    pos = m.get('sentiment_predictions_total{label="positive"}', 0.0)
+    neg = m.get('sentiment_predictions_total{label="negative"}', 0.0)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Predictions served", int(pos + neg))
+    c2.metric("Positive share", f"{pos / (pos + neg):.1%}" if pos + neg else "-")
+    c3.metric("Score PSI vs. reference", f"{m.get('sentiment_drift_score_psi', 0.0):.3f}")
+    c4.metric("In-flight requests", int(m.get("sentiment_active_requests", 0)))
+    st.caption("Refreshes every 15 s from this replica's /metrics. Use Grafana for fleet-wide views.")
+    with st.expander("Raw /metrics"):
+        st.code(raw, language="text")
 
-        def extract(name: str) -> float:
-            for line in lines:
-                if line.startswith(name + " ") or line.startswith(name + "{"):
-                    try:
-                        return float(line.split()[-1])
-                    except ValueError:
-                        pass
-            return 0.0
 
-        total_pos = extract('sentiment_requests_total{label="positive"}')
-        total_neg = extract('sentiment_requests_total{label="negative"}')
-        active    = extract("sentiment_active_requests")
-        total     = total_pos + total_neg
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total Requests", int(total))
-        c2.metric("Positive", int(total_pos))
-        c3.metric("Negative", int(total_neg))
-        c4.metric("Active Now", int(active))
-
-        if total > 0:
-            fig = px.bar(
-                x=["Positive", "Negative"],
-                y=[total_pos, total_neg],
-                title="Request breakdown",
-                color=["Positive", "Negative"],
-                color_discrete_map={"Positive": "#2ecc71", "Negative": "#e74c3c"},
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        with st.expander("Raw /metrics output"):
-            st.text(raw)
-
-    except Exception as e:
-        st.error(f"Could not fetch metrics: {e}")
+with tab_metrics:
+    st.header("Service metrics")
+    metrics_panel()

@@ -1,0 +1,9 @@
+Deployed {{ include "sentiment-api.image" . }} as {{ include "sentiment-api.fullname" . }} in namespace {{ .Release.Namespace }}.
+
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "sentiment-api.fullname" . }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "sentiment-api.fullname" . }} 8000:{{ .Values.service.port }}
+  python scripts/smoke_test.py http://localhost:8000
+{{- if not (include "sentiment-api.hasPromOperator" .) }}
+
+NOTE: Prometheus Operator CRDs not found; ServiceMonitor and PrometheusRule were skipped.
+{{- end }}

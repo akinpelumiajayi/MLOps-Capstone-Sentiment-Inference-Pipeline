@@ -1,0 +1,186 @@
+schema: '2.0'
+stages:
+  download:
+    cmd: python -m sentiment.data download
+    deps:
+    - path: src/sentiment/data.py
+      hash: md5
+      md5: af772488e19a70feb17be0fb48775196
+      size: 5399
+    params:
+      params.yaml:
+        data.dataset: cornell-movie-review-data/rotten_tomatoes
+        data.revision: aa13bc287fa6fcab6daf52f0dfb9994269ffea28
+    outs:
+    - path: data/raw
+      hash: md5
+      md5: 8f059b770ac8ccdde63f11d16dc927fe.dir
+      size: 881988
+      nfiles: 4
+  prepare:
+    cmd: python -m sentiment.data prepare
+    deps:
+    - path: data/raw
+      hash: md5
+      md5: 8f059b770ac8ccdde63f11d16dc927fe.dir
+      size: 881988
+      nfiles: 4
+    - path: src/sentiment/data.py
+      hash: md5
+      md5: af772488e19a70feb17be0fb48775196
+      size: 5399
+    - path: src/sentiment/validation.py
+      hash: md5
+      md5: 7c23a5421ef36127babb0700d9d5a0cb
+      size: 2496
+    params:
+      params.yaml:
+        data.max_text_chars: 5000
+        data.min_text_chars: 3
+        validation:
+          min_rows:
+            train: 8000
+            validation: 1000
+            test: 1000
+          max_majority_class_share: 0.6
+    outs:
+    - path: data/processed
+      hash: md5
+      md5: 4f054f154791c0366cdda736ce5d1a12.dir
+      size: 1273369
+      nfiles: 3
+    - path: reports/data_validation.json
+      hash: md5
+      md5: acf2316caf1f71ab2b765e1dd6dfd000
+      size: 3197
+  train:
+    cmd: python -m sentiment.train
+    deps:
+    - path: data/processed
+      hash: md5
+      md5: 4f054f154791c0366cdda736ce5d1a12.dir
+      size: 1273369
+      nfiles: 3
+    - path: src/sentiment/model.py
+      hash: md5
+      md5: f2c50788acf7ffaf066e62cf242ff225
+      size: 2114
+    - path: src/sentiment/train.py
+      hash: md5
+      md5: 621ac2ffc2b52d8bce55702d1ba70582
+      size: 4567
+    params:
+      params.yaml:
+        train:
+          model: logreg
+          C_grid:
+          - 1.0
+          - 2.0
+          - 4.0
+          - 8.0
+          - 16.0
+          - 32.0
+          ngram_max: 2
+          max_features: 100000
+          min_df: 1
+          random_seed: 42
+    outs:
+    - path: models/metadata.json
+      hash: md5
+      md5: 68e55a99da4bc277ec74597d397cb8e9
+      size: 2100
+    - path: models/model.pkl
+      hash: md5
+      md5: bbefb0a6f0b27637633fa5a0ba10248d
+      size: 1714362
+  evaluate:
+    cmd: python -m sentiment.evaluate
+    deps:
+    - path: data/processed/test.csv
+      hash: md5
+      md5: 3bec301f051351781d6e5a0f91cef64b
+      size: 128784
+    - path: models/model.pkl
+      hash: md5
+      md5: bbefb0a6f0b27637633fa5a0ba10248d
+      size: 1714362
+    - path: src/sentiment/drift.py
+      hash: md5
+      md5: 19ecc31827516de4e216056cebace46c
+      size: 5581
+    - path: src/sentiment/evaluate.py
+      hash: md5
+      md5: 1776367a0f0849567c3a32d596d70457
+      size: 4539
+    params:
+      params.yaml:
+        evaluate:
+          latency_samples: 500
+        serve.decision_threshold: 0.5
+    outs:
+    - path: models/reference_profile.json
+      hash: md5
+      md5: 2ae13b2426e2d61529eeef18012f730c
+      size: 930
+    - path: models/registry.json
+      hash: md5
+      md5: 9641c82524a8172ba557ff3930122c2c
+      size: 71
+    - path: reports/metrics.json
+      hash: md5
+      md5: 5f2015e77b9e6841e22d826602934bda
+      size: 486
+    - path: reports/plots/confusion.json
+      hash: md5
+      md5: 0e00c7187c7fef0434be486ba2846ae9
+      size: 71427
+  compare:
+    cmd: python -m sentiment.compare
+    deps:
+    - path: data/processed
+      hash: md5
+      md5: 4f054f154791c0366cdda736ce5d1a12.dir
+      size: 1273369
+      nfiles: 3
+    - path: src/sentiment/compare.py
+      hash: md5
+      md5: 398da54467b4f10a0ba2afd6abe9d22f
+      size: 2959
+    - path: src/sentiment/model.py
+      hash: md5
+      md5: f2c50788acf7ffaf066e62cf242ff225
+      size: 2114
+    params:
+      params.yaml:
+        compare:
+          models:
+            logreg:
+            - 1.0
+            - 2.0
+            - 4.0
+            - 8.0
+            - 16.0
+            - 32.0
+            linear_svc:
+            - 0.05
+            - 0.1
+            - 0.25
+            - 0.5
+            - 1.0
+            complement_nb:
+            - 0.1
+            - 0.3
+            - 0.5
+            - 1.0
+        train.max_features: 100000
+        train.min_df: 1
+        train.ngram_max: 2
+    outs:
+    - path: reports/model_comparison.json
+      hash: md5
+      md5: 2220fbb179da042c52e54837d497542f
+      size: 928
+    - path: reports/model_comparison.md
+      hash: md5
+      md5: e6a8cb3b6be44cf087f429c3be746065
+      size: 401

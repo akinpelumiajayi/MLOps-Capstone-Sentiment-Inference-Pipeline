@@ -1,18 +1,81 @@
 stages:
-  train:
-    cmd: python training/train.py
+  download:
+    cmd: python -m sentiment.data download
     deps:
-      - training/train.py
-      - data/processed/train.csv
+      - src/sentiment/data.py
     params:
-      - params.yaml:
-          - train.C
-          - train.ngram_max
-          - train.max_features
-          - train.test_size
-          - train.random_seed
+      - data.dataset
+      - data.revision
+    outs:
+      - data/raw
+
+  prepare:
+    cmd: python -m sentiment.data prepare
+    deps:
+      - data/raw
+      - src/sentiment/data.py
+      - src/sentiment/validation.py
+    params:
+      - data.min_text_chars
+      - data.max_text_chars
+      - validation
+    outs:
+      - data/processed
+    metrics:
+      - reports/data_validation.json:
+          cache: false
+
+  train:
+    cmd: python -m sentiment.train
+    deps:
+      - data/processed
+      - src/sentiment/model.py
+      - src/sentiment/train.py
+    params:
+      - train
     outs:
       - models/model.pkl
+      - models/metadata.json:
+          cache: false
+
+  evaluate:
+    cmd: python -m sentiment.evaluate
+    deps:
+      - data/processed/test.csv
+      - models/model.pkl
+      - src/sentiment/evaluate.py
+      - src/sentiment/drift.py
+    params:
+      - evaluate
+      - serve.decision_threshold
+    outs:
+      - models/reference_profile.json:
+          cache: false
+      - models/registry.json:
+          cache: false
     metrics:
-      - models/metrics.json:
+      - reports/metrics.json:
+          cache: false
+    plots:
+      - reports/plots/confusion.json:
+          cache: false
+          template: confusion
+          x: actual
+          y: predicted
+
+  compare:
+    cmd: python -m sentiment.compare
+    deps:
+      - data/processed
+      - src/sentiment/model.py
+      - src/sentiment/compare.py
+    params:
+      - compare
+      - train.ngram_max
+      - train.max_features
+      - train.min_df
+    outs:
+      - reports/model_comparison.json:
+          cache: false
+      - reports/model_comparison.md:
           cache: false
