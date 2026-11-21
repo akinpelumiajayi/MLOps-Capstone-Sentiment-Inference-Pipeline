@@ -33,7 +33,11 @@ metadata:
   labels:
     {{- include "sentiment-api.labels" . | nindent 4 }}
 spec:
+  {{- if hasKey .Values.pdb "minAvailable" }}
   minAvailable: {{ .Values.pdb.minAvailable }}
+  {{- else }}
+  maxUnavailable: {{ .Values.pdb.maxUnavailable | default 1 }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "sentiment-api.selectorLabels" . | nindent 6 }}

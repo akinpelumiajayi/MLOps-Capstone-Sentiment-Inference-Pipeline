@@ -7,21 +7,57 @@
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-This project takes a sentiment classifier from raw data to a monitored,
-autoscaling Kubernetes service. Every stage is reproducible, every model is
-tested before it ships, and every deployment can be rolled back.
+A production-style ML system that takes a sentiment classifier from raw data
+to a **monitored, autoscaling Kubernetes service**. Training is reproducible,
+every model must pass an automated quality gate before it ships, and every
+deployment can be rolled back with one command.
 
-The model is deliberately simple: TF-IDF features with logistic regression,
-trained on the Rotten Tomatoes movie-review dataset. The project's focus is
-the system around the model:
+The model is intentionally simple (TF-IDF and logistic regression on the
+Rotten Tomatoes reviews dataset). The engineering effort went into the system
+around it: data versioning, experiment tracking, CI/CD, Kubernetes, monitoring
+and drift detection.
 
-- **Reproducible data and training.** DVC pipeline, a pinned dataset revision, data-validation checks.
-- **Experiment tracking and a model registry.** MLflow runs, a registered model and a `champion` alias.
-- **Automated quality gate.** A model ships only if it clears absolute thresholds and does not regress against the model on `main`.
-- **Production serving.** FastAPI with readiness and liveness checks, input limits, batch inference, JSON logs and request IDs.
-- **Kubernetes.** Hardened Helm chart with HPA, PodDisruptionBudget, zero-downtime rollouts and automatic rollback.
-- **Observability.** Prometheus metrics, a provisioned Grafana dashboard, eight alert rules with a [runbook](docs/runbook.md), and live drift detection.
-- **CI/CD.** Lint, types and tests, then training, then an end-to-end deploy on a real kind cluster, then an image on GHCR with SBOM and provenance attestations.
+![Grafana dashboard: service health while the HPA runs four pods](docs/images/grafana.png)
+
+## At a glance
+
+| | |
+|---|---|
+| **Model quality** | Test F1 **0.798**, ROC AUC **0.879** on a held-out set used exactly once |
+| **Serving performance** | **527 req/s** with `/predict` p95 **13 ms** on a local kind cluster |
+| **Reliability under load** | **178,000+ requests, 0 failures** across the Docker and Kubernetes load tests |
+| **Autoscaling** | HPA scales the API out to 4 replicas in under a minute under load |
+| **Code quality** | 48 tests, **93.5% coverage**, `mypy --strict`, Ruff, pre-commit hooks |
+| **Reproducibility** | `dvc repro` rebuilds data, model and reports from a pinned dataset revision in under a minute |
+
+## Contents
+
+- [What this project demonstrates](#what-this-project-demonstrates)
+- [Architecture](#architecture)
+- [Screenshots](#screenshots)
+- [Results](#results)
+- [Quick start](#quick-start)
+- [CI/CD](#cicd)
+- [Observability](#observability)
+- [Design decisions](#design-decisions)
+- [Repository layout](#repository-layout)
+
+---
+
+## What this project demonstrates
+
+| Area | What is implemented | Tools |
+|---|---|---|
+| Data and training | Pinned dataset, cleaning and leak removal between splits, validation checks, hyperparameter search on a validation set, three-model comparison | DVC, scikit-learn, pandas |
+| Experiment tracking | Every run logged with parameters and metrics; models registered and promoted with a `champion` alias | MLflow |
+| Model governance | Quality gate blocks any model below absolute thresholds **or** worse than the model on `main` | Python, GitHub Actions |
+| Serving | REST API with single and batch inference, input limits, readiness and liveness probes, JSON logs, request IDs | FastAPI, Uvicorn, Pydantic |
+| Containers | Non-root images (multi-stage build for the API); the model is baked in, so one image tag identifies code and model together | Docker, Docker Compose |
+| Kubernetes | Hardened Helm chart: HPA, PodDisruptionBudget, read-only filesystem, zero-downtime rollouts, automatic rollback | Kubernetes, Helm, kind |
+| Monitoring | 16-panel dashboard, 8 alert rules each linked to a runbook entry, live drift detection (PSI) | Prometheus, Grafana |
+| CI/CD | Lint, types and tests, then train and gate, then a real deploy to a kind cluster with smoke and load tests, then publish to GHCR with SBOM and provenance | GitHub Actions, Jenkins |
+| Load testing | Reproducible traffic mix and an in-cluster autoscaling demo | Locust |
+| UI | Live prediction, batch analysis and service metrics | Streamlit |
 
 ---
 
@@ -58,10 +94,24 @@ model as well. There is no separate model store to keep in step.
 
 ---
 
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><b>Horizontal Pod Autoscaler under 150 concurrent users</b><br/><img src="docs/images/hpa.png" alt="kubectl output showing the HPA scaling to 4 replicas"/></td>
+    <td width="50%"><b>Streamlit: batch analysis against the live API</b><br/><img src="docs/images/streamlit.png" alt="Streamlit batch analysis with label split and probability histogram"/></td>
+  </tr>
+  <tr>
+    <td colspan="2"><b>MLflow: training run metrics, parameters and the registered <code>sentiment-classifier</code> model</b><br/><img src="docs/images/mlflow.png" alt="MLflow run page for train-logreg"/></td>
+  </tr>
+</table>
+
+---
+
 ## Results
 
-All numbers below are produced by `dvc repro` and committed in
-[`reports/`](reports). CI regenerates them on every PR.
+All model numbers are produced by `dvc repro` and committed in
+[`reports/`](reports).
 
 ### Data
 | Split | Rows | Notes |
@@ -71,70 +121,58 @@ All numbers below are produced by `dvc repro` and committed in
 | test | 1,066 | used once, for the final evaluation |
 
 All data-validation checks pass: schema, nulls and empty rows, label domain,
-class balance, duplicates, and cross-split overlap. Zero rows needed
-de-duplicating between splits (see
-[`reports/data_validation.json`](reports/data_validation.json)).
+class balance, duplicates, and overlap between splits
+([`reports/data_validation.json`](reports/data_validation.json)).
 
 ### Model (held-out test set)
 | Metric | Value |
 |---|---|
 | Accuracy | **0.797** |
 | F1 | **0.798** |
+| Precision / recall | 0.796 / 0.799 |
 | ROC AUC | 0.879 |
 | Log loss / Brier | 0.440 / 0.142 |
-| In-process latency p50 / p95 / p99 | 0.54 / 0.77 / 1.0 ms |
-| Artifact size | 1.7 MB |
+| In-process latency p50 / p95 / p99 | 0.53 / 0.73 / 0.88 ms |
+| Model file on disk (compressed) | 1.7 MB |
 
-For context, classic bag-of-words baselines on this dataset score in the high
-70s. Fine-tuned transformers reach the high 80s at much higher cost (see
+Classic bag-of-words baselines on this dataset score in the high 70s.
+Fine-tuned transformers reach the high 80s at much higher cost (see
 [Design decisions](#design-decisions)).
 
 ### Algorithm comparison
 Each algorithm goes through the same protocol: select on validation, refit on
-train+validation, score once on test. Source:
-[`reports/model_comparison.md`](reports/model_comparison.md).
+train+validation, score once on test
+([`reports/model_comparison.md`](reports/model_comparison.md)).
 
-| Model | Test F1 | ROC AUC | Log loss | p95 latency | Pickled size |
+| Model | Test F1 | ROC AUC | Log loss | p95 latency | In-memory size |
 |---|---|---|---|---|---|
-| Complement Naive Bayes | **0.809** | **0.893** | 0.468 | 1.9 ms | 8.1 MB |
-| **Logistic regression (shipped)** | 0.798 | 0.879 | **0.440** | **0.6 ms** | **4.9 MB** |
-| Linear SVM (calibrated) | 0.796 | 0.876 | 0.441 | 3.4 ms | 6.5 MB |
+| Complement Naive Bayes | **0.809** | **0.893** | 0.468 | 1.72 ms | 8.1 MB |
+| **Logistic regression (shipped)** | 0.798 | 0.879 | **0.440** | **0.81 ms** | **4.9 MB** |
+| Linear SVM (calibrated) | 0.796 | 0.876 | 0.441 | 4.18 ms | 6.5 MB |
 
 ### Serving under load
-Measured on a single Windows laptop with the
-[Locust traffic mix](loadtest/locustfile.py) (single, batch and `/info` calls).
+Measured on a single laptop with a [Locust traffic mix](loadtest/locustfile.py)
+of single predictions, batch predictions and `/info` calls.
 
 | Setup | Load | Requests | Failures | Throughput | `/predict` p50 / p95 / p99 |
 |---|---|---|---|---|---|
 | Docker Compose, 1 API container (`make loadtest`) | 50 users, 2 min | 20,271 | **0** | 170 req/s | 10 / 26 / 41 ms |
 | kind + Helm, HPA at 4 replicas (`make hpa-demo`) | 150 users, 5 min | 158,103 | **0** | 527 req/s | 4 / 13 / 24 ms |
 
-In the kind run the HPA scaled to its 4-replica maximum as CPU passed the 60%
-target. All four pods share the laptop's CPU with Prometheus and Grafana, so
-treat these as relative numbers, not capacity planning. CI also runs a 30 s
+In the kind run, the HPA scaled to its 4-replica maximum once CPU passed the
+60% target. All pods share the laptop's CPU with Prometheus and Grafana, so
+these are relative numbers, not capacity planning. CI also runs a 30-second
 load test against the Helm deployment on kind (artifact `e2e-loadtest`).
-
-**Grafana: service health during the HPA demo on kind (4 pods serving)**
-![Grafana dashboard](docs/images/grafana.png)
-
-**HPA scaling out under 150 concurrent users (`make hpa-demo`)**
-![HPA scaling](docs/images/hpa.png)
-
-**Streamlit: batch analysis against the live API**
-![Streamlit UI](docs/images/streamlit.png)
-
-**MLflow: training run metrics and the registered `sentiment-classifier` model**
-![MLflow run](docs/images/mlflow.png)
 
 ---
 
 ## Quick start
 
-**Prerequisites:** Python 3.12+, Docker. For Kubernetes you also need kind,
-kubectl and Helm 4. On Windows, run `make` from Git Bash or WSL.
+**Prerequisites:** Python 3.12+ and Docker. For Kubernetes you also need kind,
+kubectl and Helm. On Windows, run `make` from Git Bash or WSL.
 
 ```bash
-make install          # .venv + dev deps + pre-commit hooks
+make install          # .venv + dev dependencies + pre-commit hooks
 make train            # dvc repro: download -> prepare -> train -> evaluate -> compare
 make check            # ruff + mypy --strict + pytest (coverage >= 85%)
 make serve            # API on http://localhost:8000/docs
@@ -142,8 +180,12 @@ make serve            # API on http://localhost:8000/docs
 
 ### Full stack with Docker Compose
 ```bash
-make up               # copies .env.example -> .env, builds, trains if no model, starts everything
+cp .env.example .env  # then set GRAFANA_ADMIN_PASSWORD before the first start
+make up               # builds, trains if no model exists, starts everything
+make smoke            # end-to-end checks against the running API
+make loadtest         # 2-minute load test, results in reports/
 ```
+
 | Service | URL |
 |---|---|
 | API (Swagger) | http://localhost:8000/docs |
@@ -152,13 +194,11 @@ make up               # copies .env.example -> .env, builds, trains if no model,
 | Prometheus (with alert rules) | http://localhost:9090 |
 | Grafana (dashboard provisioned) | http://localhost:3000 |
 
-Load test: `docker compose --profile loadtest up locust`, then open http://localhost:8089.
-
 ### Kubernetes (kind)
 ```bash
-make kind-up                      # cluster + metrics-server (WITH_MONITORING=1 adds kube-prometheus-stack)
+WITH_MONITORING=1 make kind-up    # cluster + metrics-server + kube-prometheus-stack
 make kind-deploy                  # build image -> kind load -> helm install -> smoke test
-make hpa-demo                     # in-cluster load, logs replica count to reports/hpa-demo.log
+make hpa-demo                     # in-cluster load; logs replica count to reports/hpa-demo.log
 make kind-down
 ```
 
@@ -172,8 +212,13 @@ make kind-down
 | `/readyz` | GET | Readiness: a model is loaded (503 otherwise) |
 | `/metrics` | GET | Prometheus metrics (not exposed through the Ingress) |
 
+```bash
+curl -s localhost:8000/predict -H 'content-type: application/json' \
+  -d '{"text": "A gripping, beautifully shot film."}'
+```
+
 `confidence` is always the probability of the **returned** label (0.5 to 1.0).
-Configuration is read from environment variables; see
+Configuration comes from environment variables; see
 [`settings.py`](src/sentiment/api/settings.py).
 
 ---
@@ -217,8 +262,8 @@ for teams that use Jenkins.
 ## Observability
 
 The Grafana dashboard is provisioned from
-[`monitoring/grafana/dashboards/sentiment-api.json`](monitoring/grafana/dashboards/sentiment-api.json).
-It shows:
+[`monitoring/grafana/dashboards/sentiment-api.json`](monitoring/grafana/dashboards/sentiment-api.json)
+and works in both Docker Compose and Kubernetes. It shows:
 
 - **Service:** request rate, 5xx ratio, latency quantiles, inference time, in-flight requests, HPA replicas
 - **Model:** predictions by label, confidence quantiles, low-confidence share, input length, out-of-vocabulary rate
@@ -227,12 +272,11 @@ It shows:
 **How drift detection works.** At evaluation time the pipeline stores a
 [reference profile](src/sentiment/drift.py) next to the model. Each API pod
 keeps a rolling window of its last 500 predictions and computes the
-Population Stability Index (PSI) against that reference. You can also run the
-same check offline: `make drift INPUT=batch.csv`.
+Population Stability Index (PSI) against that reference. The same check can
+run offline: `make drift INPUT=batch.csv`.
 
-**Alerts** are defined in [`helm/sentiment-api/files/alerts.yml`](helm/sentiment-api/files/alerts.yml).
-That one file feeds both Docker Compose and the Helm `PrometheusRule`. The
-rules cover:
+**Alerts** are defined once in [`helm/sentiment-api/files/alerts.yml`](helm/sentiment-api/files/alerts.yml),
+which feeds both Docker Compose and the Helm `PrometheusRule`. They cover:
 
 - availability: API down, model not loaded, 5xx above 2%
 - latency: p95 above 100 ms
@@ -248,42 +292,42 @@ Each alert links to a section of the [runbook](docs/runbook.md).
 The API returns probabilities, and drift monitoring watches the probability
 distribution, so calibration matters as much as accuracy. Logistic regression
 is the best calibrated of the three (lowest log loss and Brier score), about
-3× faster at p95, and the smallest artifact. Swapping models is a one-line
-change (`train.model` in `params.yaml`), and the gate and comparison report
-would show the effect in the PR.
+2× faster at p95 than Naive Bayes, and the smallest artifact. Swapping models
+is a one-line change (`train.model` in `params.yaml`), and the gate and
+comparison report would show the effect in the PR.
 
-**Why not a transformer?** A fine-tuned DistilBERT would probably gain about
-8 to 10 points of accuracy. It would also cost roughly 100× the latency on
-CPU, a 250 MB image and GPU-or-patience retraining. For a portfolio piece
-about the pipeline, a sub-millisecond model keeps CI fast (the full pipeline
-runs in under a minute) and makes the HPA behaviour easy to demonstrate. The
-`build_pipeline` interface is the seam where a transformer would plug in.
+**Why not a transformer?** A fine-tuned DistilBERT would probably gain 8 to 10
+points of accuracy, at roughly 100× the CPU latency, a much larger image and
+far slower retraining. For a project about the pipeline, a sub-millisecond
+model keeps CI fast (the full pipeline runs in under a minute) and makes the
+autoscaling behaviour easy to demonstrate. The `build_pipeline` interface is
+where a transformer would plug in.
 
 **Why bake the model into the image?** It makes deployments immutable and
 rollbacks atomic: `sha-<commit>` identifies code, model and dependencies
-together. The trade-off is that a retrain needs a new image. At this model
-size that takes seconds. For large models I would pull from the MLflow
+together. The trade-off is that a retrain needs a new image, which takes
+seconds at this model size. For large models I would pull from the MLflow
 registry by alias in an init container instead.
 
-**Why DVC and MLflow together?** They answer different questions. DVC
-answers "can I reproduce this exact artifact?": it tracks data and pipeline
-lineage and skips stages whose inputs have not changed. MLflow answers "how
-did this run compare with the others?": it holds experiment history, the
-registry, and the `champion` alias.
+**Why DVC and MLflow together?** They answer different questions. DVC answers
+"can I reproduce this exact artifact?": it tracks data and pipeline lineage
+and skips stages whose inputs have not changed. MLflow answers "how did this
+run compare with the others?": it holds experiment history, the registry and
+the `champion` alias.
 
 **Why are the drift metrics per pod?** It keeps the API stateless. Prometheus
 aggregates across pods (`max`/`avg` in the alert rules), and the window size
 is configurable. For exact fleet-wide drift you would log predictions to a
 store and run `sentiment.drift` as a scheduled job.
 
-**Why does the HPA scale on CPU?** Inference is CPU-bound and there is one
-worker per pod, so CPU tracks load closely. Requests-per-second scaling would
-need the Prometheus adapter, which is a reasonable next step.
+**Why does the HPA scale on CPU?** Inference is CPU-bound with one worker per
+pod, so CPU tracks load closely. Scaling on requests per second would need the
+Prometheus adapter, which is a reasonable next step.
 
 **Limitations and next steps**
 - A canary or shadow rollout (Argo Rollouts) would gate on live metrics, not only offline ones.
 - Prediction logging to object storage would enable delayed-label evaluation and retraining triggers.
-- The training set is film reviews, so other domains will show high OOV rates and drift. The alerts are designed to catch exactly that.
+- The training data is film reviews, so other domains will show high OOV rates and drift. The alerts are designed to catch exactly that.
 
 ---
 
@@ -305,7 +349,7 @@ need the Prometheus adapter, which is a reasonable next step.
 ├── scripts/                        # smoke test, kind up/deploy, HPA demo
 ├── streamlit_app/                  # UI: live, batch, metrics
 ├── reports/                        # committed metrics, comparison, data validation
-├── docs/runbook.md
+├── docs/                           # runbook, screenshots
 ├── dvc.yaml, dvc.lock, params.yaml
 ├── Dockerfile, Dockerfile.train, docker-compose.yml
 ├── .github/workflows/ci.yml, jenkins/Jenkinsfile

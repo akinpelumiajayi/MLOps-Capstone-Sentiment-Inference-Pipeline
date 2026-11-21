@@ -70,7 +70,16 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps"
+          "unit": "reqps",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       },
@@ -106,7 +115,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(sentiment_http_requests_total{status=~\"5..\"}[$__rate_interval])) / clamp_min(sum(rate(sentiment_http_requests_total[$__rate_interval])), 1e-9)",
+          "expr": "(sum(rate(sentiment_http_requests_total{status=~\"5..\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(sentiment_http_requests_total[$__rate_interval])), 1e-9)",
           "legendFormat": "errors"
         }
       ],
@@ -129,7 +138,8 @@
                 "value": 0.02
               }
             ]
-          }
+          },
+          "noValue": "0%"
         },
         "overrides": []
       },
@@ -761,8 +771,10 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 10,
-            "showPoints": "never"
-          }
+            "showPoints": "never",
+            "axisSoftMax": 0.2
+          },
+          "min": 0
         },
         "overrides": []
       },
@@ -808,8 +820,10 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 10,
-            "showPoints": "never"
-          }
+            "showPoints": "never",
+            "axisSoftMax": 0.1
+          },
+          "min": 0
         },
         "overrides": []
       },
@@ -907,7 +921,8 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
+          "unit": "short",
+          "noValue": "No alerts firing"
         },
         "overrides": []
       },

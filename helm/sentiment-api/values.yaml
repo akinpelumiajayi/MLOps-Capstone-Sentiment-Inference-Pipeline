@@ -98,7 +98,10 @@ hpa:
 
 pdb:
   enabled: true
-  minAvailable: 1
+  # maxUnavailable (not minAvailable: 1) so a single-replica deployment can still be
+  # drained; with 2+ replicas it still guarantees all but one stay up.
+  # Set minAvailable instead to override (the two are mutually exclusive).
+  maxUnavailable: 1
 
 # ---- monitoring (needs the Prometheus Operator CRDs, e.g. kube-prometheus-stack)
 # Resources are skipped automatically when the CRDs are not installed.

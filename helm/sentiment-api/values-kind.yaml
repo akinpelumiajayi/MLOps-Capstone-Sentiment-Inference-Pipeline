@@ -10,8 +10,8 @@ hpa:
 
 resources:
   requests:
-    cpu: 50m
-    memory: 128Mi
+    cpu: 200m      # HPA % is relative to this; 50m produced misleading 500-2000% readings
+    memory: 192Mi  # observed steady-state usage is ~145Mi
   limits:
     memory: 384Mi
 
