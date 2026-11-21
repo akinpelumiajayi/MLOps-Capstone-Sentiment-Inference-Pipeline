@@ -101,25 +101,30 @@ train+validation, score once on test. Source:
 | Linear SVM (calibrated) | 0.796 | 0.876 | 0.441 | 3.4 ms | 6.5 MB |
 
 ### Serving under load
-Measured locally with `make loadtest`: one uvicorn worker on a laptop, 20
-concurrent users for 40 s, using the [Locust traffic mix](loadtest/locustfile.py).
+Measured on a single Windows laptop with the
+[Locust traffic mix](loadtest/locustfile.py) (single, batch and `/info` calls).
 
-| Requests | Failures | `/predict` p50 | p95 | p99 |
-|---|---|---|---|---|
-| 2,592 | 0 | 7 ms | 15 ms | 26 ms |
+| Setup | Load | Requests | Failures | Throughput | `/predict` p50 / p95 / p99 |
+|---|---|---|---|---|---|
+| Docker Compose, 1 API container (`make loadtest`) | 50 users, 2 min | 20,271 | **0** | 170 req/s | 10 / 26 / 41 ms |
+| kind + Helm, HPA at 4 replicas (`make hpa-demo`) | 150 users, 5 min | 158,103 | **0** | 527 req/s | 4 / 13 / 24 ms |
 
-CI repeats a 30 s load test against the Helm deployment on kind (artifact
-`e2e-loadtest`). Use `make hpa-demo` to watch the HPA scale out under heavier
-in-cluster load.
+In the kind run the HPA scaled to its 4-replica maximum as CPU passed the 60%
+target. All four pods share the laptop's CPU with Prometheus and Grafana, so
+treat these as relative numbers, not capacity planning. CI also runs a 30 s
+load test against the Helm deployment on kind (artifact `e2e-loadtest`).
 
-<!--
-Screenshots: after `make up` (or `make kind-deploy`), capture the following
-images into docs/images/ and uncomment the lines below.
+**Grafana: service health during the HPA demo on kind (4 pods serving)**
 ![Grafana dashboard](docs/images/grafana.png)
-![Streamlit UI](docs/images/streamlit.png)
-![MLflow runs](docs/images/mlflow.png)
+
+**HPA scaling out under 150 concurrent users (`make hpa-demo`)**
 ![HPA scaling](docs/images/hpa.png)
--->
+
+**Streamlit: batch analysis against the live API**
+![Streamlit UI](docs/images/streamlit.png)
+
+**MLflow: training run metrics and the registered `sentiment-classifier` model**
+![MLflow run](docs/images/mlflow.png)
 
 ---
 

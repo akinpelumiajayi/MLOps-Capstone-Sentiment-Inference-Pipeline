@@ -45,3 +45,6 @@ Thumbs.db
 helm/*/charts/
 # Regenerated on every gate run
 /reports/gate.json
+# Load-test / HPA-demo output (regenerated on every run)
+/reports/loadtest_*.csv
+/reports/hpa-demo.log
